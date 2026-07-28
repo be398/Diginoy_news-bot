@@ -4,20 +4,13 @@ import requests
 import feedparser
 import re
 from datetime import datetime, timezone
-from google import genai
 
+# دریافت متغیرهای محیطی از GitHub Secrets
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MY_CHAT_ID = os.environ.get("MY_CHAT_ID")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-# راه‌اندازی کلاینت هوش مصنوعی Gemini
-ai_client = None
-if GEMINI_API_KEY:
-    try:
-        ai_client = genai.Client(api_key=GEMINI_API_KEY)
-    except Exception as e:
-        print(f"خطا در راه‌اندازی Gemini API: {e}")
-
+# لیست منابع RSS اخبار تکنولوژی و عمومی
 RSS_FEEDS = [
     'https://www.androidauthority.com/feed/',
     'https://digiato.com/feed',
@@ -60,14 +53,24 @@ RSS_FEEDS = [
 
 DB_FILE = "seen_news.db"
 
+# --- بخش مدیریت دیتابیس SQLite ---
+
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS sent_news (
-            link TEXT PRIMARY KEY
+            link TEXT PRIMARY KEY,
+            title TEXT
         )
     ''')
+    
+    # بررسی وجود ستون title در دیتابیس‌های قدیمی و اضافه کردن آن در صورت نیاز
+    cursor.execute("PRAGMA table_info(sent_news)")
+    columns = [column[1] for column in cursor.fetchall()]
+    if 'title' not in columns:
+        cursor.execute("ALTER TABLE sent_news ADD COLUMN title TEXT")
+        
     conn.commit()
     conn.close()
 
@@ -79,15 +82,31 @@ def is_link_sent(link):
     conn.close()
     return result is not None
 
-def save_link(link):
+def save_link_and_title(link, title=""):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     try:
-        cursor.execute('INSERT INTO sent_news (link) VALUES (?)', (link,))
+        cursor.execute('INSERT OR REPLACE INTO sent_news (link, title) VALUES (?, ?)', (link, title))
         conn.commit()
-    except sqlite3.IntegrityError:
-        pass
+    except Exception as e:
+        print(f"خطا در ثبت دیتابیس: {e}")
     conn.close()
+
+def get_recent_sent_titles(limit=15):
+    """دریافت آخرین تیترهای ارسال شده برای سنجش تکراری‌ها"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('SELECT title FROM sent_news WHERE title IS NOT NULL AND title != "" ORDER BY ROWID DESC LIMIT ?', (limit,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+    except Exception as e:
+        print(f"خطا در دریافت تیترهای اخیر: {e}")
+        conn.close()
+        return []
+
+# --- بخش ارتباط با تلگرام و ابزارها ---
 
 def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -97,7 +116,10 @@ def send_telegram_message(text):
         "parse_mode": "Markdown",
         "disable_web_page_preview": False
     }
-    requests.post(url, json=payload)
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        print(f"خطا در ارسال پیام تلگرام: {e}")
 
 def clean_html(text):
     return re.sub(r'<[^>]+>', '', text).strip()
@@ -111,72 +133,99 @@ def is_published_today(entry):
     entry_date = datetime(*published_parsed[:6], tzinfo=timezone.utc).date()
     return entry_date == today_utc
 
-def analyze_and_summarize_with_ai(title, summary_text):
-    """آنالیز هوشمند خبر و ساخت خلاصه فارسی توسط Gemini"""
-    if not ai_client:
-        return clean_html(summary_text)[:150]
+# --- بخش ارتباط با هوش مصنوعی Groq ---
 
+def call_groq_ai(prompt_text):
+    """فراخوانی هوش مصنوعی Llama 3.3 از طریق Groq API"""
+    if not GROQ_API_KEY:
+        print("⚠️ متغیر GROQ_API_KEY تعریف نشده است!")
+        return None
+
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [
+            {"role": "user", "content": prompt_text}
+        ],
+        "temperature": 0.2
+    }
+
+    try:
+        res = requests.post(url, json=payload, headers=headers, timeout=20)
+        if res.status_code == 200:
+            data = res.json()
+            return data['choices'][0]['message']['content'].strip()
+        else:
+            print(f"Groq API Error Status: {res.status_code} -> {res.text}")
+            return None
+    except Exception as e:
+        print(f"خطا در ارتباط با Groq API: {e}")
+        return None
+
+def analyze_and_summarize_tech_news_with_ai(title, summary_text):
+    """تحلیل ماهیت خبر تکنولوژی/علمی و نوشتن خلاصه فارسی"""
     content = clean_html(f"Title: {title}\nSummary: {summary_text}")
     if not content:
-        return ""
+        return None
 
     prompt = (
-        f"این متن یک پست از سایت خبری است:\n\n{content}\n\n"
+        f"این متن یک پست از یک رسانه خبری/تکنولوژی است:\n\n{content}\n\n"
         "وظایف شما:\n"
-        "۱. آیا این یک «خبر واقعی» است؟ (اگر تبلیغات خرید، نقد و بررسی محصول، راهنمای بازی/خرید، یا مقاله نظر شخصی است پاسخ دهید NO).\n"
-        "۲. اگر یک خبر واقعی است، یک خلاصه کوتاه ۱ یا ۲ جمله‌ای، بسیار جذاب و روان به زبان فارسی بنویسید.\n\n"
+        "۱. آیا این پست یک «خبر واقعی» است؟\n"
+        "پاسخ باید NO باشد اگر: راهنمای خرید/کار با محصول، نقد و بررسی (Review)، مقاله نظر شخصی، یا تبلیغات خرید کالا باشد.\n"
+        "۲. اگر خبر واقعی است، یک خلاصه کوتاه ۱ یا ۲ جمله‌ای به زبان فارسی روان، جذاب و دقیق بنویسید.\n\n"
         "فرمت پاسخ حتماً و دقیقاً به این شکل باشد:\n"
         "IS_NEWS: [YES یا NO]\n"
         "SUMMARY: [خلاصه فارسی خبر]"
     )
 
-    try:
-        response = ai_client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt
-        )
-        text_resp = response.text.strip()
-        
-        if "IS_NEWS: NO" in text_resp:
-            return None
-        
-        match = re.search(r'SUMMARY:\s*(.*)', text_resp, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-        return text_resp
-    except Exception as e:
-        print(f"خطا در پردازش هوش مصنوعی: {e}")
-        return clean_html(summary_text)[:150]
+    response = call_groq_ai(prompt)
+    if not response:
+        return None
 
-def is_duplicate_story_ai(new_title, existing_titles):
-    """سنجش درک مفاهیمی اخبار تکراری توسط هوش مصنوعی"""
-    if not ai_client or not existing_titles:
+    if "IS_NEWS: NO" in response:
+        return None
+
+    match = re.search(r'SUMMARY:\s*(.*)', response, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+
+    return response
+
+def is_duplicate_tech_story_ai(new_title, recent_titles):
+    """بررسی درک مفاهیمی هوش مصنوعی برای جلوگیری از ارسال اخبار تکراری"""
+    if not recent_titles:
         return False
+
+    titles_to_check = recent_titles[-15:]
 
     prompt = (
         f"خبر جدید: {new_title}\n\n"
-        f"لیست اخبار قبلاً ثبت‌شده:\n" + "\n".join([f"- {t}" for t in existing_titles]) + "\n\n"
-        "آیا خبر جدید درباره همان «موضوع و رویداد واحدی» است که در یکی از اخبار قبلی به آن پرداخته شده؟ (حتی اگر تیترها متفاوت باشند اما سوژه اصلی یکی باشد).\n"
-        "فقط پاسخ دهید YES یا NO."
+        f"لیست آخرین اخبار ارسال‌شده:\n" + 
+        "\n".join([f"- {t}" for t in titles_to_check]) + 
+        "\n\nوظیفه شما:\n"
+        "آیا این خبر جدید درباره همان «رویداد، اتفاق یا سوژه واحدی» است که در یکی از اخبار بالا وجود دارد؟ "
+        "(حتی اگر تیترها یا رسانه‌ها متفاوت باشند، اما اصل رویداد یکی باشد پاسخ YES است).\n\n"
+        "فقط و فقط کلمه YES یا NO را پاسخ دهید."
     )
 
-    try:
-        response = ai_client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt
-        )
-        return "YES" in response.text.strip().upper()
-    except Exception as e:
-        print(f"خطا در تشخیص تکرار با هوش مصنوعی: {e}")
-        return False
+    response = call_groq_ai(prompt)
+    if response and "YES" in response.upper():
+        return True
+    return False
+
+# --- بدنه اصلی اسکریپت ---
 
 def main():
     init_db()
-    print("در حال جمع‌آوری اخبار و تحلیل هوشمند با Gemini...")
+    print("در حال جمع‌آوری اخبار تکنولوژی و تحلیل با هوش مصنوعی...")
 
+    # ۱. جمع‌آوری اخبار امروز از تمام منابع
     raw_articles = []
-    
-    # ۱. جمع‌آوری اخبار امروز
     for feed_url in RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
@@ -188,25 +237,26 @@ def main():
         except Exception as e:
             print(f"خطا در دریافت RSS از {feed_url}: {e}")
 
-    # ۲. فیلتر، خلاصه‌سازی و حذف تکراری‌ها با هوش مصنوعی
+    # ۲. پردازش، فیلتر و خلاصه‌سازی توسط AI
+    recent_sent_titles = get_recent_sent_titles(15)
+    processed_titles = recent_sent_titles.copy()
     processed_news = []
-    processed_titles = []
 
     for entry in raw_articles:
         raw_summary = getattr(entry, 'summary', '') or getattr(entry, 'description', '')
         
-        # الف) آنالیز ماهیت خبر + خلاصه فارسی
-        fa_summary = analyze_and_summarize_with_ai(entry.title, raw_summary)
+        # الف) سنجش ماهیت خبر و خلاصه‌سازی فارسی
+        fa_summary = analyze_and_summarize_tech_news_with_ai(entry.title, raw_summary)
         
-        # اگر هوش مصنوعی تشخیص داد مقاله غیرخبری است
         if fa_summary is None:
-            save_link(entry.link)
+            save_link_and_title(entry.link, entry.title)
+            print(f"خبر غیرمرتبط رد شد: {entry.title}")
             continue
 
-        # ب) بررسی تک‌به‌تک جهت عدم انتشار موضوع تکراری
-        if is_duplicate_story_ai(entry.title, processed_titles):
-            save_link(entry.link)
-            print(f"موضوع تکراری توسط AI رد شد: {entry.title}")
+        # ب) جلوگیری از ارسال موضوع تکراری
+        if is_duplicate_tech_story_ai(entry.title, processed_titles):
+            save_link_and_title(entry.link, entry.title)
+            print(f"❌ خبر تکراری شناسایی و رد شد: {entry.title}")
             continue
 
         processed_news.append({
@@ -216,7 +266,7 @@ def main():
         })
         processed_titles.append(entry.title)
 
-    # ۳. ارسال خروجی‌های هوشمند به تلگرام
+    # ۳. ارسال به تلگرام
     new_messages_sent = 0
     for news in processed_news:
         msg = f"📰 **{news['title']}**\n\n"
@@ -226,11 +276,11 @@ def main():
 
         send_telegram_message(msg)
         new_messages_sent += 1
-        save_link(news['link'])
-        print(f"خبر ارسال شد: {news['title']}")
+        save_link_and_title(news['link'], news['title'])
+        print(f"✅ خبر ارسال شد: {news['title']}")
 
     if new_messages_sent > 0:
-        send_telegram_message("🏁 **پایان این دور از اخبار**")
+        send_telegram_message("🏁 **پایان این دور از اخبار تکنولوژی**")
     else:
         send_telegram_message("❌ **چیزی یافت نشد**")
 
