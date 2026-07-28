@@ -5,11 +5,20 @@ import feedparser
 import re
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
+from google import genai
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MY_CHAT_ID = os.environ.get("MY_CHAT_ID")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# ۱. لیست آدرس‌های RSS سایت‌های درخواستی
+# راه‌اندازی کلاینت هوش مصنوعی
+ai_client = None
+if GEMINI_API_KEY:
+    try:
+        ai_client = genai.Client(api_key=GEMINI_API_KEY)
+    except Exception as e:
+        print(f"خطا در راه‌اندازی Gemini API: {e}")
+
 RSS_FEEDS = [
     'https://www.androidauthority.com/feed/',
     'https://digiato.com/feed',
@@ -50,7 +59,6 @@ RSS_FEEDS = [
     'https://www.buzzfeed.com/news.xml'
 ]
 
-# مسیرها و تگ‌های ممنوعه غیرخبری (نقد، راهنما، تبلیغات خرید)
 NON_NEWS_PATTERNS = ['/reviews/', '/review/', '/guides/', '/guide/', '/deals/', '/best-deals/']
 
 DB_FILE = "seen_news.db"
@@ -105,7 +113,6 @@ def extract_keywords(text):
     return {w for w in words if len(w) > 3 and w not in stopwords}
 
 def is_published_today(entry):
-    """بررسی اینکه آیا خبر مربوط به امروز (UTC) است یا خیر"""
     published_parsed = getattr(entry, 'published_parsed', None) or getattr(entry, 'updated_parsed', None)
     if not published_parsed:
         return True
@@ -115,32 +122,51 @@ def is_published_today(entry):
     return entry_date == today_utc
 
 def is_valid_news(entry):
-    """فیلتر مطالب غیرخبری و بررسی انتشار در همان روز"""
     link = entry.link.lower()
     title = entry.title.lower()
 
-    # ۱. فقط اخبار امروز
     if not is_published_today(entry):
         return False
 
-    # ۲. حذف لینک‌های مربوط به راهنمای خرید و ریویو
     for pattern in NON_NEWS_PATTERNS:
         if pattern in link or pattern in title:
             return False
 
     return True
 
+def summarize_to_persian(title, summary_text):
+    """خلاصه‌سازی خبر به زبان فارسی با کمک هوش مصنوعی Gemini"""
+    if not ai_client:
+        return ""
+
+    content_to_analyze = clean_text(f"{title}. {summary_text}")
+    if not content_to_analyze:
+        return ""
+
+    prompt = (
+        f"این تیتر و خلاصه یک خبر است:\n\n{content_to_analyze}\n\n"
+        "لطفاً فقط یک خلاصه بسیار کوتاه (حداکثر ۱ یا ۲ جمله کوتاه) به زبان فارسی روان و جذاب بنویس که مضمون اصلی خبر را بیان کند. "
+        "هیچ توضیحات اضافه، مقدمه یا موخره‌ای ننویس."
+    )
+
+    try:
+        response = ai_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
+        return response.text.strip()
+    except Exception as e:
+        print(f"خطا در تولید خلاصه فارسی: {e}")
+        return ""
+
 def are_articles_similar(art1, art2):
-    """تشخیص اخبار تکراری از چند سایت مختلف با مقایسه محتوا و تیتر"""
     title1 = clean_text(art1.title)
     title2 = clean_text(art2.title)
 
-    # مقایسه عنوان
     title_sim = SequenceMatcher(None, title1, title2).ratio()
     if title_sim >= 0.50:
         return True
 
-    # مقایسه کلمات کلیدی متن
     kw1 = extract_keywords(f"{art1.title} {getattr(art1, 'summary', '')}")
     kw2 = extract_keywords(f"{art2.title} {getattr(art2, 'summary', '')}")
     
@@ -165,7 +191,6 @@ def main():
 
     raw_articles = []
     
-    # ۲. بررسی ۳۰ خبر آخر هر سایت
     for feed_url in RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
@@ -180,7 +205,6 @@ def main():
         except Exception as e:
             print(f"خطا در دریافت RSS از {feed_url}: {e}")
 
-    # ۳. گروه‌بندی اخبار تکراری و انتخاب کامل‌ترین خبر
     grouped_articles = []
     for article in raw_articles:
         is_duplicate_topic = False
@@ -208,10 +232,20 @@ def main():
                 'all_links': [article.link]
             })
 
-    # ۴. ارسال اخبار به تلگرام یا اعلام «چیزی یافت نشد»
+    # ۴. ارسال اخبار همراه با خلاصه فارسی
     new_messages_sent = 0
     for group in grouped_articles:
-        msg = f"📰 **{group['title']}**\n\n🔗 {group['link']}"
+        article = group['best_article']
+        raw_summary = getattr(article, 'summary', '') or getattr(article, 'description', '')
+        
+        # تولید خلاصه فارسی
+        fa_summary = summarize_to_persian(group['title'], raw_summary)
+
+        msg = f"📰 **{group['title']}**\n\n"
+        if fa_summary:
+            msg += f"📝 **خلاصه:** {fa_summary}\n\n"
+        msg += f"🔗 {group['link']}"
+
         send_telegram_message(msg)
         new_messages_sent += 1
         
