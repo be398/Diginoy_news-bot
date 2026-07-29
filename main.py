@@ -139,7 +139,6 @@ def is_published_recently(entry):
     today_utc = datetime.now(timezone.utc).date()
     entry_date = datetime(*published_parsed[:6], tzinfo=timezone.utc).date()
     
-    # اجازه عبور به اخبار امروز و دیروز
     return (today_utc - entry_date).days <= 1
 
 # --- بخش ارتباط با هوش مصنوعی Groq ---
@@ -196,18 +195,28 @@ def is_duplicate_story_ai(new_title, new_raw_summary, history_list):
     return False
 
 def summarize_news_with_ai(title, summary_text):
-    """خلاصه‌سازی تمام مطالب بدون هیچ فیلتر موضوعی"""
+    """خلاصه‌سازی تمام مطالب و اجبار ۱۰۰٪ به زبان فارسی"""
     content = clean_html(f"Title: {title}\nSummary: {summary_text}")
     if not content:
         return None
 
     prompt = (
-        f"متن زیر را بخوانید و یک خلاصه روان، جذاب و دقیق ۱ یا ۲ جمله‌ای به زبان فارسی بنویسید:\n\n{content}\n\n"
-        "پاسخ شما فقط و فقط خلاصه فارسی باشد."
+        f"متن زیر یک پست خبری است:\n\n{content}\n\n"
+        "وظیفه دقیق شما:\n"
+        "این خبر را بخوانید و یک خلاصه کوتاه ۱ یا ۲ جمله‌ای، بسیار دقیق، روان و جذاب به «زبان فارسی» بنویسید.\n\n"
+        "قوانین بسیار مهم:\n"
+        "۱. پاسخ شما حتماً و قطعاً باید به زبان فارسی باشد (حتی یک کلمه انگلیسی پاسخ ندهید).\n"
+        "۲. هیچ مقدمه‌ای مثل 'این خبر درباره...' یا 'خلاصه:' ننویسید، مستقیماً اصل خلاصه فارسی را بفرستید."
     )
 
     response = call_groq_ai(prompt)
-    return response if response else clean_html(summary_text)[:200]
+
+    # بررسی سخت‌گیرانه: اگر پاسخ خالی بود یا کلمات انگلیسی طولانی داشت، مجدداً درخواست ترجمه فارسی می‌دهد
+    if not response or re.search(r'[a-zA-Z]{5,}', response):
+        retry_prompt = f"این تیتر خبری انگلیسی را فقط به فارسی روان ترجمه و در یک جمله کوتاه خلاصه کن:\n{title}"
+        response = call_groq_ai(retry_prompt)
+
+    return response if response else "خلاصه فارسی در دسترس نیست."
 
 # --- بدنه اصلی اسکریپت ---
 
