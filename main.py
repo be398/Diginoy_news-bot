@@ -143,7 +143,7 @@ def is_published_recently(entry):
 
 # --- بخش ارتباط با هوش مصنوعی Groq ---
 
-def call_groq_ai(prompt_text):
+def call_groq_ai(system_instruction, user_prompt):
     if not GROQ_API_KEY:
         print("⚠️ متغیر GROQ_API_KEY تعریف نشده است!")
         return None
@@ -155,8 +155,11 @@ def call_groq_ai(prompt_text):
     }
     payload = {
         "model": "llama-3.3-70b-versatile",
-        "messages": [{"role": "user", "content": prompt_text}],
-        "temperature": 0.0
+        "messages": [
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": 0.3
     }
 
     try:
@@ -174,7 +177,8 @@ def is_duplicate_story_ai(new_title, new_raw_summary, history_list):
     if not history_list:
         return False
 
-    prompt = (
+    system_instruction = "You are an expert news editor comparing articles for duplicates."
+    user_prompt = (
         f"NEW ARTICLE TO CHECK:\n"
         f"Title: {new_title}\n"
         f"Content/Summary: {new_raw_summary[:300]}\n\n"
@@ -189,34 +193,35 @@ def is_duplicate_story_ai(new_title, new_raw_summary, history_list):
         "Answer ONLY with 'YES' or 'NO'."
     )
 
-    response = call_groq_ai(prompt)
+    response = call_groq_ai(system_instruction, user_prompt)
     if response and "YES" in response.upper():
         return True
     return False
 
 def summarize_news_with_ai(title, summary_text):
-    """خلاصه‌سازی تمام مطالب و اجبار ۱۰۰٪ به زبان فارسی"""
+    """خلاصه‌سازی تمام مطالب به زبان فارسی روان و جذاب"""
     content = clean_html(f"Title: {title}\nSummary: {summary_text}")
     if not content:
         return None
 
-    prompt = (
-        f"متن زیر یک پست خبری است:\n\n{content}\n\n"
-        "وظیفه دقیق شما:\n"
-        "این خبر را بخوانید و یک خلاصه کوتاه ۱ یا ۲ جمله‌ای، بسیار دقیق، روان و جذاب به «زبان فارسی» بنویسید.\n\n"
-        "قوانین بسیار مهم:\n"
-        "۱. پاسخ شما حتماً و قطعاً باید به زبان فارسی باشد (حتی یک کلمه انگلیسی پاسخ ندهید).\n"
-        "۲. هیچ مقدمه‌ای مثل 'این خبر درباره...' یا 'خلاصه:' ننویسید، مستقیماً اصل خلاصه فارسی را بفرستید."
+    system_instruction = "شما یک مترجم و روزنامه‌نگار حرفه‌ای فارسی‌زبان هستید. وظیفه شما ترجمه و خلاصه‌سازی اخبار به زبان فارسی روان، جالب و بدون حاشیه است."
+    
+    user_prompt = (
+        f"خبر زیر را بخوانید و یک خلاصه روان و جذاب در ۱ یا ۲ جمله به زبان فارسی بنویسید:\n\n{content}\n\n"
+        "نکات مهم:\n"
+        "- حتماً تمام متن خلاصه به زبان فارسی باشد.\n"
+        "- از نوشتن مقدمه‌های اضافی مثل 'این خبر درباره...' خودداری کنید."
     )
 
-    response = call_groq_ai(prompt)
+    response = call_groq_ai(system_instruction, user_prompt)
 
-    # بررسی سخت‌گیرانه: اگر پاسخ خالی بود یا کلمات انگلیسی طولانی داشت، مجدداً درخواست ترجمه فارسی می‌دهد
-    if not response or re.search(r'[a-zA-Z]{5,}', response):
-        retry_prompt = f"این تیتر خبری انگلیسی را فقط به فارسی روان ترجمه و در یک جمله کوتاه خلاصه کن:\n{title}"
-        response = call_groq_ai(retry_prompt)
+    if response:
+        # پاکسازی ترفندهای احتمالی AI
+        response = re.sub(r'^(خلاصه خبر:|خلاصه:)\s*', '', response, flags=re.IGNORECASE).strip()
+        return response
 
-    return response if response else "خلاصه فارسی در دسترس نیست."
+    # اگر هوش مصنوعی پاسخ نداد، حداقل تیتر را خلاصه نگه می‌داریم
+    return f"خبر جدید در مورد: {title}"
 
 # --- بدنه اصلی اسکریپت ---
 
