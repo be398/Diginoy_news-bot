@@ -199,40 +199,37 @@ def is_duplicate_story_ai(new_title, new_raw_summary, history_list):
     return False
 
 def summarize_news_with_ai(title, summary_text):
-    """خلاصه‌سازی تمام مطالب به زبان فارسی روان و جذاب"""
+    """خلاصه‌سازی تمام مطالب به فارسی روان در ۲ تا ۳ خط (دقیقاً مشابه بات گیمینگ)"""
     content = clean_html(f"Title: {title}\nSummary: {summary_text}")
     if not content:
         return None
 
-    system_instruction = "شما یک مترجم و روزنامه‌نگار حرفه‌ای فارسی‌زبان هستید. وظیفه شما ترجمه و خلاصه‌سازی اخبار به زبان فارسی روان، جالب و بدون حاشیه است."
+    system_instruction = "شما یک خبرنگار و سردبیر اخبار تکنولوژی، عمومی و سرگرمی هستید. وظیفه شما ترجمه و خلاصه کردن اخبار به زبان فارسی روان، جذاب و کامل در ۲ تا ۳ جمله کوتاه برای کانال تلگرام است."
     
     user_prompt = (
-        f"خبر زیر را بخوانید و یک خلاصه روان و جذاب در ۱ یا ۲ جمله به زبان فارسی بنویسید:\n\n{content}\n\n"
-        "نکات مهم:\n"
-        "- حتماً تمام متن خلاصه به زبان فارسی باشد.\n"
-        "- از نوشتن مقدمه‌های اضافی مثل 'این خبر درباره...' خودداری کنید."
+        f"این متن یک خبر است:\n\n{content}\n\n"
+        "یک خلاصه کامل، روان و دقیق در ۲ تا ۳ جمله به زبان فارسی بنویسید که اصل خبر و جزئیات مهم آن را پوشش دهد. هیچ مقدمه یا متنی اضافه ننویسید."
     )
 
     response = call_groq_ai(system_instruction, user_prompt)
 
     if response:
-        # پاکسازی ترفندهای احتمالی AI
-        response = re.sub(r'^(خلاصه خبر:|خلاصه:)\s*', '', response, flags=re.IGNORECASE).strip()
-        return response
+        return re.sub(r'^(خلاصه خبر:|خلاصه:)\s*', '', response, flags=re.IGNORECASE).strip()
 
-    # اگر هوش مصنوعی پاسخ نداد، حداقل تیتر را خلاصه نگه می‌داریم
     return f"خبر جدید در مورد: {title}"
 
 # --- بدنه اصلی اسکریپت ---
 
 def main():
     init_db()
-    print("در حال دریافت تمام ورودی‌های ۳۹ منبع بدون فیلتر...")
+    print("در حال دریافت تمام ورودی‌های ۳۹ منبع با خلاصه‌سازی کامل...")
 
     raw_articles = []
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
 
-    # ۱. جمع‌آوری اخبار از ۳۹ منبع (بررسی ۳۰ آیتم اخیر از هر فید)
+    # ۱. جمع‌آوری اخبار از ۳۹ منبع
     for feed_url in RSS_FEEDS:
         is_telegram = ('telegram' in feed_url or 'rsshub' in feed_url)
         try:
@@ -240,7 +237,7 @@ def main():
                 response = requests.get(feed_url, headers=headers, timeout=15)
                 feed = feedparser.parse(response.content)
             else:
-                feed = feedparser.parse(feed_url)
+                feed = feedparser.parse(feed_url, request_headers=headers)
 
             for entry in feed.entries[:30]:
                 link = entry.link
@@ -263,7 +260,7 @@ def main():
             print(f"❌ خبر تکراری رد شد: {entry.title}")
             continue
 
-        # ب) خلاصه‌سازی خبر به فارسی
+        # ب) خلاصه‌سازی خبر به فارسی ۲ تا ۳ خطی
         fa_summary = summarize_news_with_ai(entry.title, raw_summary)
 
         processed_news.append({
