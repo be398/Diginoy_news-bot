@@ -10,8 +10,13 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MY_CHAT_ID = os.environ.get("MY_CHAT_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-# لیست منابع RSS اخبار تکنولوژی و عمومی
+# لیست کامل منابع RSS اخبار تکنولوژی، عمومی و کانال‌های تلگرام (۳۹ منبع)
 RSS_FEEDS = [
+    # --- فید کانال‌های تلگرامی ---
+    'https://rsshub.app/telegram/channel/Khabare_vije',
+    'https://rsshub.app/telegram/channel/khabarestan_farsii',
+    
+    # --- لیست کامل تمام ۳۷ سایت منبع شما ---
     'https://www.androidauthority.com/feed/',
     'https://digiato.com/feed',
     'https://www.zoomit.ir/feed/',
@@ -65,7 +70,6 @@ def init_db():
         )
     ''')
     
-    # بررسی وجود ستون title در دیتابیس‌های قدیمی و اضافه کردن آن در صورت نیاز
     cursor.execute("PRAGMA table_info(sent_news)")
     columns = [column[1] for column in cursor.fetchall()]
     if 'title' not in columns:
@@ -167,20 +171,22 @@ def call_groq_ai(prompt_text):
         return None
 
 def analyze_and_summarize_tech_news_with_ai(title, summary_text):
-    """تحلیل ماهیت خبر تکنولوژی/علمی و رد اخبار گیمینگ و متفرقه"""
+    """تحلیل ماهیت خبر و فیلتر اخبار سیاسی، نظامی، مذهبی و چت‌های روزمره"""
     content = clean_html(f"Title: {title}\nSummary: {summary_text}")
     if not content:
         return None
 
     prompt = (
-        f"این متن یک پست از یک رسانه خبری است:\n\n{content}\n\n"
+        f"این متن یک پست از یک کانال خبری یا سایت است:\n\n{content}\n\n"
         "وظایف شما:\n"
-        "۱. آیا این یک «خبر واقعی مربوط به تکنولوژی، هوش مصنوعی، علوم، سخت‌افزار، گجت‌ها یا حوزه دیجیتال» است؟\n"
-        "پاسخ باید قطعاً NO باشد اگر:\n"
-        "  - خبر مربوط به ویدیوگیم، کنسول‌ها (پلی‌استیشن، ایکس‌باکس، نینتندو)، بازی‌های ویدئویی یا صنعت گیمینگ باشد.\n"
-        "  - خبر مربوط به سینما، سلبریتی‌ها، فیلم/سریال یا اخبار عمومی/حوادث باشد.\n"
-        "  - راهنمای خرید/کار با محصول (Guide)، نقد و بررسی (Review) یا مقاله نظر شخصی باشد.\n"
-        "۲. اگر یک خبر واقعیِ خالص در حوزه تکنولوژی/علم است، یک خلاصه کوتاه ۱ یا ۲ جمله‌ای به زبان فارسی روان، جذاب و دقیق بنویسید.\n\n"
+        "۱. آیا این پست یک «خبر واقعی در حوزه تکنولوژی، هوش مصنوعی، علوم، سخت‌افزار، گجت‌ها یا اخبار عام‌المنفعه و کاربردی» است؟\n"
+        "پاسخ باید قطعاً NO باشد اگر پست شامل هریک از موارد زیر باشد:\n"
+        "  - اخبار سیاسی، نظامی، جنگی، بین‌الملل، یا امور مربوط به دولت‌ها و سیاستمداران.\n"
+        "  - مطالب مذهبی، مناسبت‌های تقویمی، ادعیه، احادیث یا تبریک/تسلیت.\n"
+        "  - پست‌های روزمره و چت (مثل: صبح بخیر، شب خوش، تقویم امروز، نرخ ارز/طلا، متن ادبی).\n"
+        "  - اخبار ویدیوگیم، کنسول‌ها، فیلم/سریال یا سلبریتی‌ها.\n"
+        "  - تبلیغات، راهنمای خرید یا مقالات نظر شخصی.\n"
+        "۲. اگر پست یک خبر واقعیِ مفید و غیرسیاسی/غیرنظامی است، یک خلاصه کوتاه ۱ یا ۲ جمله‌ای به زبان فارسی روان، جذاب و دقیق بنویسید.\n\n"
         "فرمت پاسخ حتماً و دقیقاً به این شکل باشد:\n"
         "IS_NEWS: [YES یا NO]\n"
         "SUMMARY: [خلاصه فارسی خبر]"
@@ -225,9 +231,9 @@ def is_duplicate_tech_story_ai(new_title, recent_titles):
 
 def main():
     init_db()
-    print("در حال جمع‌آوری اخبار تکنولوژی و تحلیل با هوش مصنوعی...")
+    print("در حال جمع‌آوری اخبار از ۳۹ منبع و تحلیل هوشمند با Groq...")
 
-    # ۱. جمع‌آوری اخبار امروز از تمام منابع
+    # ۱. جمع‌آوری اخبار امروز از تمام منابع و کانال‌ها
     raw_articles = []
     for feed_url in RSS_FEEDS:
         try:
@@ -240,7 +246,7 @@ def main():
         except Exception as e:
             print(f"خطا در دریافت RSS از {feed_url}: {e}")
 
-    # ۲. پردازش، فیلتر و خلاصه‌سازی توسط AI
+    # ۲. پردازش، فیلتر دقیق و خلاصه‌سازی توسط AI
     recent_sent_titles = get_recent_sent_titles(15)
     processed_titles = recent_sent_titles.copy()
     processed_news = []
@@ -248,12 +254,12 @@ def main():
     for entry in raw_articles:
         raw_summary = getattr(entry, 'summary', '') or getattr(entry, 'description', '')
         
-        # الف) سنجش ماهیت خبر و خلاصه‌سازی فارسی
+        # الف) سنجش ماهیت خبر و خلاصه‌سازی فارسی (رد مطالب سیاسی/نظامی/احوالپرسی)
         fa_summary = analyze_and_summarize_tech_news_with_ai(entry.title, raw_summary)
         
         if fa_summary is None:
             save_link_and_title(entry.link, entry.title)
-            print(f"خبر غیرمرتبط/گیمینگ رد شد: {entry.title}")
+            print(f"خبر غیرمرتبط/سیاسی/نظامی/چت رد شد: {entry.title}")
             continue
 
         # ب) جلوگیری از ارسال موضوع تکراری
@@ -283,7 +289,7 @@ def main():
         print(f"✅ خبر ارسال شد: {news['title']}")
 
     if new_messages_sent > 0:
-        send_telegram_message("🏁 **پایان این دور از اخبار تکنولوژی**")
+        send_telegram_message("🏁 **پایان این دور از اخبار**")
     else:
         send_telegram_message("❌ **چیزی یافت نشد**")
 
