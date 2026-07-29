@@ -9,14 +9,16 @@ from datetime import datetime, timezone
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MY_CHAT_ID = os.environ.get("MY_CHAT_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+GH_PAT = os.environ.get("GH_PAT")
+GITHUB_REPOSITORY = os.environ.get("GITHUB_REPOSITORY")
 
-# لیست کامل منابع RSS اخبار تکنولوژی، عمومی، ورزشی، سرگرمی و نظامی (۳۹ منبع)
+# لیست کامل ۳۹ منبع خبر (تلگرام + ۳۷ سایت)
 RSS_FEEDS = [
     # --- فید کانال‌های تلگرامی ---
     'https://rsshub.app/telegram/channel/Khabare_vije',
     'https://rsshub.app/telegram/channel/khabarestan_farsii',
     
-    # --- لیست کامل ۳۷ سایت منبع ---
+    # --- لیست ۳۷ سایت خبری، تکنولوژی، ورزشی، سرگرمی و زرد ---
     'https://www.androidauthority.com/feed/',
     'https://digiato.com/feed',
     'https://www.zoomit.ir/feed/',
@@ -99,7 +101,7 @@ def save_link_title_and_summary(link, title="", summary=""):
     conn.close()
 
 def get_recent_sent_stories(limit=50):
-    """دریافت ۵۰ خبر اخیر جهت مقایسه عمیق متنی"""
+    """دریافت ۵۰ خبر اخیر برای مقایسه عمیق متنی"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     try:
@@ -168,7 +170,7 @@ def call_groq_ai(prompt_text):
         return None
 
 def is_duplicate_story_ai(new_title, new_raw_summary, history_list):
-    """سنجش هوشمند شباهت رویداد بدون سوزاندن اخبار جدید"""
+    """سنجش عمیق مفاهیمی هوش مصنوعی بدون سوزاندن اخبار جدید یک فرد/تیم"""
     if not history_list:
         return False
 
@@ -180,10 +182,10 @@ def is_duplicate_story_ai(new_title, new_raw_summary, history_list):
         "\n".join([f"- {item}" for item in history_list]) + 
         "\n\nYOUR INSTRUCTION:\n"
         "Compare the 'NEW ARTICLE' with the 'PREVIOUSLY SENT ARTICLES HISTORY'.\n"
-        "Determining Factor: Is the new article reporting the EXACT SAME event, military strike, product launch, scientific discovery, or identical news story as one in the history?\n\n"
+        "Is the new article reporting the EXACT SAME specific event, military strike, sports match result, celebrity drama, product launch, or news story as one in the history?\n\n"
         "CRITICAL RULE:\n"
-        "- Two articles can be about the SAME subject/country/company, but if they discuss DIFFERENT events, announcements, or news stories, they are NOT duplicates -> Answer NO.\n"
-        "- ONLY answer YES if both articles cover the SAME specific event or news story (even if written with different wording or clickbait titles).\n\n"
+        "- Two articles can be about the SAME entity/person/team/company (e.g., Elon Musk, Real Madrid, Apple), but if they discuss DIFFERENT events, matches, or developments, they are NOT duplicates -> Answer NO.\n"
+        "- ONLY answer YES if both articles cover the EXACT SAME news event.\n\n"
         "Answer ONLY with 'YES' or 'NO'."
     )
 
@@ -193,37 +195,37 @@ def is_duplicate_story_ai(new_title, new_raw_summary, history_list):
     return False
 
 def analyze_and_summarize_news_with_ai(title, summary_text, is_from_telegram=False):
-    """تحلیل هوشمند بر اساس منبع خبر (مجاز بودن اخبار نظامی برای سایت‌ها و فیلتر آن برای تلگرام)"""
+    """تحلیل قطعی ماهیت خبر با تفکیک دقیق تلگرام و سایت‌ها"""
     content = clean_html(f"Title: {title}\nSummary: {summary_text}")
     if not content:
         return None
 
     if is_from_telegram:
-        # فیلترهای سخت‌گیرانه مخصوص کانال‌های تلگرام
-        filter_instruction = (
-            "پاسخ باید قطعاً NO باشد اگر پست شامل موارد زیر باشد:\n"
-            "  - اخبار سیاسی، نظامی، جنگی، بین‌الملل، یا امور مربوط به دولت‌ها و سیاستمداران.\n"
-            "  - مطالب مذهبی، مناسبت‌های تقویمی، ادعیه، احادیث یا تبریک/تسلیت.\n"
-            "  - پست‌های روزمره و چت (مثل: صبح بخیر، شب خوش، تقویم امروز، نرخ ارز/طلا، متن ادبی).\n"
-            "  - تبلیغات مستقیم، راهنمای خرید یا مقالات نظر شخصی."
+        # فیلتر تلگرام: رد سیاسی، نظامی، مذهبی، احوالپرسی و چت
+        rules = (
+            "برای کانال‌های تلگرامی پاسخ باید NO باشد اگر پست شامل هریک از موارد زیر باشد:\n"
+            "۱. اخبار سیاسی، نظامی، جنگ، یا امور دولت‌ها.\n"
+            "۲. مطالب مذهبی، مناسبت‌های تقویمی، ادعیه، احادیث یا تبریک/تسلیت.\n"
+            "۳. چت روزمره (صبح بخیر، شب خوش)، تقویم امروز، نرخ طلا/ارز، متون ادبی یا تبلیغات."
         )
     else:
-        # فیلترهای سایت‌ها (اخبار نظامی، علمی، ورزشی و تکنولوژی مجاز هستند)
-        filter_instruction = (
-            "پاسخ باید قطعاً NO باشد تنها و فقط اگر پست شامل موارد زیر باشد:\n"
-            "  - اخبار جنجالی یا بیانیه‌های صریح احزاب سیاسی داخلی/حزبی.\n"
-            "  - مطالب مذهبی، مناسبت‌های تقویمی، ادعیه، احادیث یا تبریک/تسلیت.\n"
-            "  - چت روزمره، تبلیغات مستقیم، یا مقالات بدون خبر جدید.\n"
-            "نکته: اخبار نظامی، فناوری‌های دفاعی، حوادث و تحولات بین‌المللی برای سایت‌ها ۱۰۰٪ مجاز (YES) هستند."
+        # قوانین سایت‌ها: اخبار نظامی، ورزشی، زرد، سلبریتی، علمی و حوادث ۱۰۰٪ مجازند
+        rules = (
+            "برای سایت‌های خبری قوانین به این شرح است:\n"
+            "موارد مجاز (YES): اخبار تکنولوژی، علمی، حوادث، حواشی سلبریتی‌ها، سینما، اخبار ورزشی، اخبار زرد جذاب و اخبار نظامی/دفاعی همگی ۱۰۰٪ مجاز (YES) هستند.\n"
+            "تنها موارد ممنوع (NO):\n"
+            "۱. اخبار سیاسی حزبی/داخلی و بیانیه‌های احزاب.\n"
+            "۲. مطالب مذهبی، ادعیه و تبریک/تسلیت.\n"
+            "۳. تبلیغات مستقیم محصولات خریدنی."
         )
 
     prompt = (
-        f"این متن یک پست از یک منبع خبری است:\n\n{content}\n\n"
+        f"پست ورودی:\n{content}\n\n"
+        f"دستورالعمل ارزیابی:\n{rules}\n\n"
         "وظایف شما:\n"
-        "۱. آیا این پست یک «خبر واقعی یا مطلب مفید (در حوزه تکنولوژی، علوم، نظامی/دفاعی، ورزشی، سلبریتی‌ها، سرگرمی یا عمومی)» است؟\n"
-        f"{filter_instruction}\n"
-        "۲. اگر پست یک خبر/مطلب مفید است، یک خلاصه کوتاه ۱ یا ۲ جمله‌ای به زبان فارسی روان، جذاب و دقیق بنویسید.\n\n"
-        "فرمت پاسخ حتماً و دقیقاً به این شکل باشد:\n"
+        "۱. آیا پست طبق دستورالعمل بالا مجاز است؟ (پاسخ YES یا NO)\n"
+        "۲. اگر مجاز (YES) است، خلاصه کوتاه ۱ یا ۲ جمله‌ای روان، دقیق و جذاب به زبان فارسی بنویسید.\n\n"
+        "فرمت پاسخ دقیقاً به این شکل باشد:\n"
         "IS_NEWS: [YES یا NO]\n"
         "SUMMARY: [خلاصه فارسی خبر]"
     )
@@ -242,12 +244,12 @@ def analyze_and_summarize_news_with_ai(title, summary_text, is_from_telegram=Fal
 
 def main():
     init_db()
-    print("در حال جمع‌آوری اخبار از ۳۹ منبع و فیلتر هوشمند تکراری‌ها...")
+    print("در حال جمع‌آوری اخبار از ۳۹ منبع با سیستم اصلاح‌شده...")
 
     raw_articles = []
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
-    # ۱. جمع‌آوری اخبار امروز از تمام ۳۹ منبع و کانال
+    # ۱. جمع‌آوری اخبار از منابع
     for feed_url in RSS_FEEDS:
         is_telegram = ('telegram' in feed_url or 'rsshub' in feed_url)
         try:
@@ -261,13 +263,12 @@ def main():
                 link = entry.link
 
                 if not is_link_sent(link) and is_published_today(entry):
-                    # اضافه کردن مشخصه منبع تلگرامی به آیتم
                     entry['is_telegram'] = is_telegram
                     raw_articles.append(entry)
         except Exception as e:
             print(f"خطا در دریافت RSS از {feed_url}: {e}")
 
-    # ۲. دریافت تاریخچه ۵۰ خبر قبلی دیتابیس
+    # ۲. پردازش و مقایسه عمیق ۵۰ خبر اخیر
     recent_stories_history = get_recent_sent_stories(50)
     processed_news = []
 
@@ -275,13 +276,13 @@ def main():
         raw_summary = clean_html(getattr(entry, 'summary', '') or getattr(entry, 'description', ''))
         is_telegram = getattr(entry, 'is_telegram', False)
 
-        # الف) ابتدا بررسی تکراری بودن خبر (با سنجش رویداد واحد پیش از ترجمه)
+        # الف) سنجش تکراری نبودن خبر (انگلیسی به انگلیسی)
         if is_duplicate_story_ai(entry.title, raw_summary, recent_stories_history):
             save_link_title_and_summary(entry.link, entry.title, raw_summary)
             print(f"❌ خبر تکراری شناسایی و رد شد: {entry.title}")
             continue
 
-        # ب) سنجش ماهیت خبر و خلاصه‌سازی فارسی بر اساس منبع (تلگرام یا سایت)
+        # ب) ارزیابی مجاز بودن خبر بر اساس منبع و خلاصه‌سازی فارسی
         fa_summary = analyze_and_summarize_news_with_ai(entry.title, raw_summary, is_from_telegram=is_telegram)
         
         if fa_summary is None:
@@ -295,10 +296,10 @@ def main():
             'summary': fa_summary
         })
         
-        # افزودن خبر جدید به لیست تاریخچه جاری برای دورهای بعدی همین اجرا
+        # بروزرسانی لیست تاریخچه در همان اجرای جاری
         recent_stories_history.append(f"Title: {entry.title} | Info: {raw_summary[:150]}")
 
-    # ۳. ارسال به تلگرام
+    # ۳. ارسال نتایج به تلگرام
     new_messages_sent = 0
     for news in processed_news:
         msg = f"📰 **{news['title']}**\n\n"
