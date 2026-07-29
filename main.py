@@ -21,7 +21,7 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 DB_FILE = "seen_news.db"
 
-# --- مدیریت دیتابیس با SQLite ---
+# --- مدیریت و اصلاح خودکار دیتابیس SQLite ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -36,6 +36,17 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    
+    # چک کردن ستون hash برای ارتقای دیتابیس‌های قدیمی
+    cursor.execute("PRAGMA table_info(sent_news)")
+    columns = [column[1] for column in cursor.fetchall()]
+    if 'hash' not in columns:
+        try:
+            cursor.execute("ALTER TABLE sent_news ADD COLUMN hash TEXT")
+            logging.info("🛠️ ستون hash به دیتابیس قدیمی اضافه شد.")
+        except Exception as e:
+            logging.error(f"خطا در افزودن ستون hash: {e}")
+            
     conn.commit()
     conn.close()
 
@@ -43,21 +54,25 @@ def is_hash_or_similar_seen(news_hash, title, limit=100):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
-    # ۱. بررسی دقیق با Hash
-    cursor.execute('SELECT 1 FROM sent_news WHERE hash = ?', (news_hash,))
-    if cursor.fetchone():
-        conn.close()
-        return True
-    
-    # ۲. بررسی شباهت تیتر با RapidFuzz
-    cursor.execute('SELECT title FROM sent_news ORDER BY id DESC LIMIT ?', (limit,))
-    recent_titles = [row[0] for row in cursor.fetchall() if row[0]]
-    conn.close()
-
-    for old_title in recent_titles:
-        if fuzz.ratio(title.lower(), old_title.lower()) > 85:
-            logging.info(f"⚡ خبر تکراری تشخیصی با RapidFuzz: {title}")
+    try:
+        # ۱. بررسی با Hash
+        cursor.execute('SELECT 1 FROM sent_news WHERE hash = ?', (news_hash,))
+        if cursor.fetchone():
+            conn.close()
             return True
+        
+        # ۲. بررسی شباهت تیتر با RapidFuzz
+        cursor.execute('SELECT title FROM sent_news ORDER BY id DESC LIMIT ?', (limit,))
+        recent_titles = [row[0] for row in cursor.fetchall() if row[0]]
+        conn.close()
+
+        for old_title in recent_titles:
+            if fuzz.ratio(title.lower(), old_title.lower()) > 85:
+                logging.info(f"⚡ خبر تکراری تشخیصی با RapidFuzz: {title}")
+                return True
+    except Exception as e:
+        logging.error(f"خطا در چک دیتابیس: {e}")
+        conn.close()
             
     return False
 
@@ -81,10 +96,14 @@ def generate_hash(title, content):
 def clean_html(text):
     return re.sub(r'<[^>]+>', '', text).strip()
 
-# --- دریافت ناهمگام (Async RSS Fetcher) ---
+# --- دریافت ناهمگام با هدرهای استاندارد مرورگر ---
 async def fetch_feed(session, category, url):
     articles = []
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
     try:
         async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
             if response.status == 200:
@@ -113,7 +132,7 @@ async def fetch_feed(session, category, url):
         logging.warning(f"خطا در دریافت RSS از {url}: {e}")
     return articles
 
-# --- فراخوانی هوشمند Groq ---
+# --- فراخوانی Groq API ---
 async def process_with_groq(session, article):
     if not GROQ_API_KEY:
         logging.error("⚠️ متغیر GROQ_API_KEY تنظیم نشده است!")
@@ -189,16 +208,14 @@ async def send_telegram(session, text):
 async def main():
     logging.info("🚀 شروع اجرای اسکریپت اخبار...")
     
-    # بررسی متغیرها
     if not BOT_TOKEN or not MY_CHAT_ID:
-        logging.critical("❌ متغیرهای BOT_TOKEN یا MY_CHAT_ID در GitHub Secrets ست نشده‌اند!")
+        logging.critical("❌ متغیرهای BOT_TOKEN یا MY_CHAT_ID تنظیم نشده‌اند!")
         return
 
     init_db()
-    
-    # بررسی وجود فایل yaml
+
     if not os.path.exists("feeds.yaml"):
-        logging.critical("❌ فایل feeds.yaml پیدا نشد! مطمئن شوید کنار main.py قرار دارد.")
+        logging.critical("❌ فایل feeds.yaml پیدا نشد!")
         return
 
     with open("feeds.yaml", "r", encoding="utf-8") as f:
@@ -221,10 +238,10 @@ async def main():
             await send_telegram(session, "❌ **در این دور خبر جدیدی یافت نشد.**")
             return
 
-        # ۲. پردازش و خلاصه‌سازی با Groq
+        # ۲. خلاصه با Groq
         processed_by_category = {}
 
-        for article in all_new_articles[:10]: # حداکثر ۱۰ خبر در هر اجرا
+        for article in all_new_articles[:10]:
             logging.info(f"در حال پردازش: {article['title']}")
             ai_res = await process_with_groq(session, article)
             
@@ -247,11 +264,7 @@ async def main():
 
                 save_news_to_db(article['hash'], article['link'], article['title'], summary, cat)
 
-        # ۳. ارسال اخبار به تلگرام
-        if not processed_by_category:
-            logging.warning("اخبار دریافت شدند اما هیچ‌کدام توسط Groq خلاصه نشدند (احتمالاً خطا در API Key).")
-            return
-
+        # ۳. ارسال پیام‌ها
         for category, messages in processed_by_category.items():
             header = f"📁 **اخبار جدید بخش: {category}**\n\n"
             full_msg = header + "\n".join(messages)
@@ -263,7 +276,7 @@ async def main():
             else:
                 await send_telegram(session, full_msg)
 
-        logging.info("✅ ارسال پیام‌ها به تلگرام با موفقیت انجام شد.")
+        logging.info("✅ پایان فرایند ارسال.")
 
 if __name__ == "__main__":
     asyncio.run(main())
