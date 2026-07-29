@@ -16,7 +16,7 @@ RSS_FEEDS = [
     'https://rsshub.app/telegram/channel/Khabare_vije',
     'https://rsshub.app/telegram/channel/khabarestan_farsii',
     
-    # --- لیست کامل تمام ۳۷ سایت منبع شما ---
+    # --- لیست کامل تمام ۳۷ سایت منبع ---
     'https://www.androidauthority.com/feed/',
     'https://digiato.com/feed',
     'https://www.zoomit.ir/feed/',
@@ -66,14 +66,16 @@ def init_db():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS sent_news (
             link TEXT PRIMARY KEY,
-            title TEXT
+            title TEXT,
+            summary TEXT
         )
     ''')
-    
     cursor.execute("PRAGMA table_info(sent_news)")
     columns = [column[1] for column in cursor.fetchall()]
     if 'title' not in columns:
         cursor.execute("ALTER TABLE sent_news ADD COLUMN title TEXT")
+    if 'summary' not in columns:
+        cursor.execute("ALTER TABLE sent_news ADD COLUMN summary TEXT")
         
     conn.commit()
     conn.close()
@@ -86,27 +88,27 @@ def is_link_sent(link):
     conn.close()
     return result is not None
 
-def save_link_and_title(link, title=""):
+def save_link_title_and_summary(link, title="", summary=""):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     try:
-        cursor.execute('INSERT OR REPLACE INTO sent_news (link, title) VALUES (?, ?)', (link, title))
+        cursor.execute('INSERT OR REPLACE INTO sent_news (link, title, summary) VALUES (?, ?, ?)', (link, title, summary))
         conn.commit()
     except Exception as e:
         print(f"خطا در ثبت دیتابیس: {e}")
     conn.close()
 
-def get_recent_sent_titles(limit=15):
-    """دریافت آخرین تیترهای ارسال شده برای سنجش تکراری‌ها"""
+def get_recent_sent_stories(limit=50):
+    """دریافت ۵۰ خبر اخیر برای مقایسه عمیق متنی"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     try:
-        cursor.execute('SELECT title FROM sent_news WHERE title IS NOT NULL AND title != "" ORDER BY ROWID DESC LIMIT ?', (limit,))
+        cursor.execute('SELECT title, summary FROM sent_news WHERE title IS NOT NULL AND title != "" ORDER BY ROWID DESC LIMIT ?', (limit,))
         rows = cursor.fetchall()
         conn.close()
-        return [r[0] for r in rows]
+        return [f"Title: {r[0]} | Info: {r[1][:150] if r[1] else ''}" for r in rows]
     except Exception as e:
-        print(f"خطا در دریافت تیترهای اخیر: {e}")
+        print(f"خطا در دریافت تاریخچه دیتابیس: {e}")
         conn.close()
         return []
 
@@ -140,7 +142,6 @@ def is_published_today(entry):
 # --- بخش ارتباط با هوش مصنوعی Groq ---
 
 def call_groq_ai(prompt_text):
-    """فراخوانی هوش مصنوعی Llama 3.3 از طریق Groq API"""
     if not GROQ_API_KEY:
         print("⚠️ متغیر GROQ_API_KEY تعریف نشده است!")
         return None
@@ -152,10 +153,8 @@ def call_groq_ai(prompt_text):
     }
     payload = {
         "model": "llama-3.3-70b-versatile",
-        "messages": [
-            {"role": "user", "content": prompt_text}
-        ],
-        "temperature": 0.2
+        "messages": [{"role": "user", "content": prompt_text}],
+        "temperature": 0.0
     }
 
     try:
@@ -163,12 +162,35 @@ def call_groq_ai(prompt_text):
         if res.status_code == 200:
             data = res.json()
             return data['choices'][0]['message']['content'].strip()
-        else:
-            print(f"Groq API Error Status: {res.status_code} -> {res.text}")
-            return None
+        return None
     except Exception as e:
         print(f"خطا در ارتباط با Groq API: {e}")
         return None
+
+def is_duplicate_story_ai(new_title, new_raw_summary, history_list):
+    """سنجش هوشمند شباهت رویداد تکنولوژی/عمومی بدون سوزاندن اخبار جدید یک برند"""
+    if not history_list:
+        return False
+
+    prompt = (
+        f"NEW ARTICLE TO CHECK:\n"
+        f"Title: {new_title}\n"
+        f"Content/Summary: {new_raw_summary[:300]}\n\n"
+        f"PREVIOUSLY SENT ARTICLES HISTORY (LAST 50):\n" + 
+        "\n".join([f"- {item}" for item in history_list]) + 
+        "\n\nYOUR INSTRUCTION:\n"
+        "Compare the 'NEW ARTICLE' with the 'PREVIOUSLY SENT ARTICLES HISTORY'.\n"
+        "Determining Factor: Is the new article reporting the EXACT SAME event, specific product launch, scientific discovery, or identical news story as one in the history?\n\n"
+        "CRITICAL RULE:\n"
+        "- Two articles can be about the SAME company/topic (e.g., Apple, Google, AI, Space), but if they discuss DIFFERENT events, product launches, or news, they are NOT duplicates -> Answer NO.\n"
+        "- ONLY answer YES if both articles cover the SAME specific event or news story (even if written with different wording or clickbait titles).\n\n"
+        "Answer ONLY with 'YES' or 'NO'."
+    )
+
+    response = call_groq_ai(prompt)
+    if response and "YES" in response.upper():
+        return True
+    return False
 
 def analyze_and_summarize_tech_news_with_ai(title, summary_text):
     """تحلیل ماهیت خبر و فیلتر اخبار سیاسی، نظامی، مذهبی و چت‌های روزمره"""
@@ -193,10 +215,7 @@ def analyze_and_summarize_tech_news_with_ai(title, summary_text):
     )
 
     response = call_groq_ai(prompt)
-    if not response:
-        return None
-
-    if "IS_NEWS: NO" in response:
+    if not response or "IS_NEWS: NO" in response:
         return None
 
     match = re.search(r'SUMMARY:\s*(.*)', response, re.DOTALL)
@@ -205,39 +224,24 @@ def analyze_and_summarize_tech_news_with_ai(title, summary_text):
 
     return response
 
-def is_duplicate_tech_story_ai(new_title, recent_titles):
-    """بررسی درک مفاهیمی هوش مصنوعی برای جلوگیری از ارسال اخبار تکراری"""
-    if not recent_titles:
-        return False
-
-    titles_to_check = recent_titles[-15:]
-
-    prompt = (
-        f"خبر جدید: {new_title}\n\n"
-        f"لیست آخرین اخبار ارسال‌شده:\n" + 
-        "\n".join([f"- {t}" for t in titles_to_check]) + 
-        "\n\nوظیفه شما:\n"
-        "آیا این خبر جدید درباره همان «رویداد، اتفاق یا سوژه واحدی» است که در یکی از اخبار بالا وجود دارد؟ "
-        "(حتی اگر تیترها یا رسانه‌ها متفاوت باشند، اما اصل رویداد یکی باشد پاسخ YES است).\n\n"
-        "فقط و فقط کلمه YES یا NO را پاسخ دهید."
-    )
-
-    response = call_groq_ai(prompt)
-    if response and "YES" in response.upper():
-        return True
-    return False
-
 # --- بدنه اصلی اسکریپت ---
 
 def main():
     init_db()
-    print("در حال جمع‌آوری اخبار از ۳۹ منبع و تحلیل هوشمند با Groq...")
+    print("در حال جمع‌آوری اخبار از ۳۹ منبع و فیلتر هوشمند تکراری‌ها...")
 
-    # ۱. جمع‌آوری اخبار امروز از تمام منابع و کانال‌ها
     raw_articles = []
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+
+    # ۱. جمع‌آوری اخبار امروز از تمام ۳۹ منبع و کانال
     for feed_url in RSS_FEEDS:
         try:
-            feed = feedparser.parse(feed_url)
+            if 'telegram' in feed_url or 'rsshub' in feed_url:
+                response = requests.get(feed_url, headers=headers, timeout=15)
+                feed = feedparser.parse(response.content)
+            else:
+                feed = feedparser.parse(feed_url)
+
             for entry in feed.entries[:20]:
                 link = entry.link
 
@@ -246,26 +250,25 @@ def main():
         except Exception as e:
             print(f"خطا در دریافت RSS از {feed_url}: {e}")
 
-    # ۲. پردازش، فیلتر دقیق و خلاصه‌سازی توسط AI
-    recent_sent_titles = get_recent_sent_titles(15)
-    processed_titles = recent_sent_titles.copy()
+    # ۲. دریافت تاریخچه ۵۰ خبر قبلی دیتابیس
+    recent_stories_history = get_recent_sent_stories(50)
     processed_news = []
 
     for entry in raw_articles:
-        raw_summary = getattr(entry, 'summary', '') or getattr(entry, 'description', '')
+        raw_summary = clean_html(getattr(entry, 'summary', '') or getattr(entry, 'description', ''))
         
-        # الف) سنجش ماهیت خبر و خلاصه‌سازی فارسی (رد مطالب سیاسی/نظامی/احوالپرسی)
+        # الف) ابتدا بررسی تکراری بودن خبر (با سنجش رویداد واحد پیش از ترجمه)
+        if is_duplicate_story_ai(entry.title, raw_summary, recent_stories_history):
+            save_link_title_and_summary(entry.link, entry.title, raw_summary)
+            print(f"❌ خبر تکراری شناسایی و رد شد: {entry.title}")
+            continue
+
+        # ب) سنجش ماهیت خبر و خلاصه‌سازی فارسی (رد مطالب سیاسی/نظامی/احوالپرسی)
         fa_summary = analyze_and_summarize_tech_news_with_ai(entry.title, raw_summary)
         
         if fa_summary is None:
-            save_link_and_title(entry.link, entry.title)
+            save_link_title_and_summary(entry.link, entry.title, raw_summary)
             print(f"خبر غیرمرتبط/سیاسی/نظامی/چت رد شد: {entry.title}")
-            continue
-
-        # ب) جلوگیری از ارسال موضوع تکراری
-        if is_duplicate_tech_story_ai(entry.title, processed_titles):
-            save_link_and_title(entry.link, entry.title)
-            print(f"❌ خبر تکراری شناسایی و رد شد: {entry.title}")
             continue
 
         processed_news.append({
@@ -273,7 +276,9 @@ def main():
             'link': entry.link,
             'summary': fa_summary
         })
-        processed_titles.append(entry.title)
+        
+        # افزودن خبر جدید به لیست تاریخچه جاری برای دورهای بعدی همین اجرا
+        recent_stories_history.append(f"Title: {entry.title} | Info: {raw_summary[:150]}")
 
     # ۳. ارسال به تلگرام
     new_messages_sent = 0
@@ -285,7 +290,7 @@ def main():
 
         send_telegram_message(msg)
         new_messages_sent += 1
-        save_link_and_title(news['link'], news['title'])
+        save_link_title_and_summary(news['link'], news['title'], news['summary'])
         print(f"✅ خبر ارسال شد: {news['title']}")
 
     if new_messages_sent > 0:
