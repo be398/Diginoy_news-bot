@@ -49,13 +49,13 @@ def is_hash_or_similar_seen(news_hash, title, limit=100):
         conn.close()
         return True
     
-    # ۲. بررسی شباهت تیتر با RapidFuzz (حذف AI برای تکراری‌ها)
+    # ۲. بررسی شباهت تیتر با RapidFuzz
     cursor.execute('SELECT title FROM sent_news ORDER BY id DESC LIMIT ?', (limit,))
     recent_titles = [row[0] for row in cursor.fetchall() if row[0]]
     conn.close()
 
     for old_title in recent_titles:
-        if fuzz.ratio(title.lower(), old_title.lower()) > 85: # اگر بالای ۸۵٪ شبیه بود
+        if fuzz.ratio(title.lower(), old_title.lower()) > 85:
             logging.info(f"⚡ خبر تکراری تشخیصی با RapidFuzz: {title}")
             return True
             
@@ -84,17 +84,20 @@ def clean_html(text):
 # --- دریافت ناهمگام (Async RSS Fetcher) ---
 async def fetch_feed(session, category, url):
     articles = []
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
     try:
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
             if response.status == 200:
                 content = await response.read()
                 feed = feedparser.parse(content)
-                for entry in feed.entries[:15]:
+                for entry in feed.entries[:10]:
                     title = getattr(entry, 'title', '')
                     link = getattr(entry, 'link', '')
                     summary = clean_html(getattr(entry, 'summary', '') or getattr(entry, 'description', ''))
                     
+                    if not title or not link:
+                        continue
+
                     news_hash = generate_hash(title, summary)
                     if not is_hash_or_similar_seen(news_hash, title):
                         articles.append({
@@ -104,13 +107,16 @@ async def fetch_feed(session, category, url):
                             'summary_raw': summary,
                             'category': category
                         })
+            else:
+                logging.warning(f"کد وضعیت {response.status} از source {url}")
     except Exception as e:
         logging.warning(f"خطا در دریافت RSS از {url}: {e}")
     return articles
 
-# --- فراخوانی هوشمند Groq (خلاصه + نکته مهم تنها با ۱ درخواست) ---
+# --- فراخوانی هوشمند Groq ---
 async def process_with_groq(session, article):
     if not GROQ_API_KEY:
+        logging.error("⚠️ متغیر GROQ_API_KEY تنظیم نشده است!")
         return None
 
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -148,13 +154,19 @@ async def process_with_groq(session, article):
                 content = res_data['choices'][0]['message']['content']
                 parsed = json.loads(content)
                 return parsed
+            else:
+                logging.error(f"خطای Groq API: کد {response.status}")
     except Exception as e:
-        logging.error(f"خطا در فراخوانی Groq: {e}")
+        logging.error(f"خطا در پردازش Groq: {e}")
     
     return None
 
-# --- ارسال گروه‌بندی‌شده به تلگرام ---
-async def send_telegram_batch(session, text):
+# --- ارسال به تلگرام ---
+async def send_telegram(session, text):
+    if not BOT_TOKEN or not MY_CHAT_ID:
+        logging.error("⚠️ BOT_TOKEN یا MY_CHAT_ID تعریف نشده است!")
+        return False
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": MY_CHAT_ID,
@@ -164,20 +176,36 @@ async def send_telegram_batch(session, text):
     }
     try:
         async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-            pass
+            if resp.status != 200:
+                body = await resp.text()
+                logging.error(f"خطا در ارسال تلگرام (کد {resp.status}): {body}")
+                return False
+            return True
     except Exception as e:
-        logging.error(f"خطا در ارسال پیام تلگرام: {e}")
+        logging.error(f"خطا در ارتباط با تلگرام: {e}")
+        return False
 
 # --- تابع اصلی ---
 async def main():
+    logging.info("🚀 شروع اجرای اسکریپت اخبار...")
+    
+    # بررسی متغیرها
+    if not BOT_TOKEN or not MY_CHAT_ID:
+        logging.critical("❌ متغیرهای BOT_TOKEN یا MY_CHAT_ID در GitHub Secrets ست نشده‌اند!")
+        return
+
     init_db()
     
-    # بارگذاری منابع از YAML
+    # بررسی وجود فایل yaml
+    if not os.path.exists("feeds.yaml"):
+        logging.critical("❌ فایل feeds.yaml پیدا نشد! مطمئن شوید کنار main.py قرار دارد.")
+        return
+
     with open("feeds.yaml", "r", encoding="utf-8") as f:
         feed_categories = yaml.safe_load(f)
 
     async with aiohttp.ClientSession() as session:
-        # ۱. دریافت همزمان اخبار از تمام سورس‌ها
+        # ۱. دریافت ناهمگام اخبار
         tasks = []
         for category, urls in feed_categories.items():
             for url in urls:
@@ -186,17 +214,20 @@ async def main():
         results = await asyncio.gather(*tasks)
         all_new_articles = [item for sublist in results for item in sublist]
 
-        logging.info(f"📰 تعداد اخبار جدید پس از فیلتر اولیه: {len(all_new_articles)}")
+        logging.info(f"📰 تعداد کل اخبار جدید یافت‌شده: {len(all_new_articles)}")
 
         if not all_new_articles:
             logging.info("خبر جدیدی یافت نشد.")
+            await send_telegram(session, "❌ **در این دور خبر جدیدی یافت نشد.**")
             return
 
-        # ۲. پردازش اخبار با Groq و بسته‌بندی بر اساس دسته‌بندی
+        # ۲. پردازش و خلاصه‌سازی با Groq
         processed_by_category = {}
 
-        for article in all_new_articles[:15]: # محدود کردن به ۱۵ خبر برتر در هر اجرا
+        for article in all_new_articles[:10]: # حداکثر ۱۰ خبر در هر اجرا
+            logging.info(f"در حال پردازش: {article['title']}")
             ai_res = await process_with_groq(session, article)
+            
             if ai_res:
                 summary = ai_res.get("summary", "")
                 takeaway = ai_res.get("takeaway", "")
@@ -214,21 +245,25 @@ async def main():
                     processed_by_category[cat] = []
                 processed_by_category[cat].append(msg_chunk)
 
-                # ثبت در دیتابیس
                 save_news_to_db(article['hash'], article['link'], article['title'], summary, cat)
 
-        # ۳. ارسال به تلگرام در دسته‌های مجزا برای هر موضوع
+        # ۳. ارسال اخبار به تلگرام
+        if not processed_by_category:
+            logging.warning("اخبار دریافت شدند اما هیچ‌کدام توسط Groq خلاصه نشدند (احتمالاً خطا در API Key).")
+            return
+
         for category, messages in processed_by_category.items():
             header = f"📁 **اخبار جدید بخش: {category}**\n\n"
             full_msg = header + "\n".join(messages)
             
-            # اگر متن خیلی بلند شد تکه‌تکه فرستاده شود
             if len(full_msg) > 4000:
                 chunks = [full_msg[i:i+4000] for i in range(0, len(full_msg), 4000)]
                 for chunk in chunks:
-                    await send_telegram_batch(session, chunk)
+                    await send_telegram(session, chunk)
             else:
-                await send_telegram_batch(session, full_msg)
+                await send_telegram(session, full_msg)
+
+        logging.info("✅ ارسال پیام‌ها به تلگرام با موفقیت انجام شد.")
 
 if __name__ == "__main__":
     asyncio.run(main())
