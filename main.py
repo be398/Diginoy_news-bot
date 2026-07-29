@@ -159,7 +159,7 @@ def call_groq_ai(system_instruction, user_prompt):
             {"role": "system", "content": system_instruction},
             {"role": "user", "content": user_prompt}
         ],
-        "temperature": 0.3
+        "temperature": 0.2
     }
 
     try:
@@ -198,20 +198,38 @@ def is_duplicate_story_ai(new_title, new_raw_summary, history_list):
         return True
     return False
 
+def is_mostly_english(text):
+    """تشخیص اینکه آیا خروجی به زبان انگلیسی برگردانده شده است یا خیر"""
+    if not text:
+        return True
+    # اگر تعداد کلمات انگلیسی در متن زیاد باشد
+    english_words = re.findall(r'\b[a-zA-Z]{3,}\b', text)
+    return len(english_words) > 4
+
 def summarize_news_with_ai(title, summary_text):
-    """خلاصه‌سازی تمام مطالب به فارسی روان در ۲ تا ۳ خط (دقیقاً مشابه بات گیمینگ)"""
+    """خلاصه‌سازی تمام مطالب با اجبار ۱۰۰٪ به فارسی روان"""
     content = clean_html(f"Title: {title}\nSummary: {summary_text}")
     if not content:
         return None
 
-    system_instruction = "شما یک خبرنگار و سردبیر اخبار تکنولوژی، عمومی و سرگرمی هستید. وظیفه شما ترجمه و خلاصه کردن اخبار به زبان فارسی روان، جذاب و کامل در ۲ تا ۳ جمله کوتاه برای کانال تلگرام است."
+    system_instruction = (
+        "شما یک روزنامه‌نگار و مترجم ارشد فارسی هستید. "
+        "قانون بسیار حیاتی: تمام پاسخ‌های شما حتماً و بدون استثنا باید به زبان فارسی باشد. "
+        "نوشتن حتی یک جمله انگلیسی اکیداً ممنوع است."
+    )
     
     user_prompt = (
-        f"این متن یک خبر است:\n\n{content}\n\n"
-        "یک خلاصه کامل، روان و دقیق در ۲ تا ۳ جمله به زبان فارسی بنویسید که اصل خبر و جزئیات مهم آن را پوشش دهد. هیچ مقدمه یا متنی اضافه ننویسید."
+        f"خبر انگلیسی زیر را به زبان فارسی ترجمه کرده و در ۲ تا ۳ جمله روان و کامل خلاصه کنید:\n\n{content}\n\n"
+        "پاسخ شما باید فقط و فقط متن خلاصه شده به زبان فارسی باشد (بدون تیتر انگلیسی یا مقدمه اضافی)."
     )
 
     response = call_groq_ai(system_instruction, user_prompt)
+
+    # اگر هوش مصنوعی پاسخ انگلیسی داد، مجدداً با پرومپت مستقیم‌تر ترجمه را اجبار می‌کنیم
+    if not response or is_mostly_english(response):
+        retry_instruction = "شما فقط وظیفه ترجمه متن‌های خبری از انگلیسی به فارسی روان را دارید."
+        retry_prompt = f"این متن را دقیقاً به زبان فارسی ترجمه و در دو جمله خلاصه کن:\n{title}\n{summary_text[:200]}"
+        response = call_groq_ai(retry_instruction, retry_prompt)
 
     if response:
         return re.sub(r'^(خلاصه خبر:|خلاصه:)\s*', '', response, flags=re.IGNORECASE).strip()
@@ -222,7 +240,7 @@ def summarize_news_with_ai(title, summary_text):
 
 def main():
     init_db()
-    print("در حال دریافت تمام ورودی‌های ۳۹ منبع با خلاصه‌سازی کامل...")
+    print("در حال دریافت و ترجمه ۱۰۰٪ فارسی اخبار ۳۹ منبع...")
 
     raw_articles = []
     headers = {
