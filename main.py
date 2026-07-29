@@ -10,13 +10,13 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MY_CHAT_ID = os.environ.get("MY_CHAT_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-# لیست کامل منابع RSS اخبار تکنولوژی، عمومی و کانال‌های تلگرام (۳۹ منبع)
+# لیست کامل منابع RSS اخبار تکنولوژی، عمومی، ورزشی و سرگرمی (۳۹ منبع)
 RSS_FEEDS = [
     # --- فید کانال‌های تلگرامی ---
     'https://rsshub.app/telegram/channel/Khabare_vije',
     'https://rsshub.app/telegram/channel/khabarestan_farsii',
     
-    # --- لیست کامل تمام ۳۷ سایت منبع ---
+    # --- لیست کامل ۳۷ سایت منبع ---
     'https://www.androidauthority.com/feed/',
     'https://digiato.com/feed',
     'https://www.zoomit.ir/feed/',
@@ -99,7 +99,7 @@ def save_link_title_and_summary(link, title="", summary=""):
     conn.close()
 
 def get_recent_sent_stories(limit=50):
-    """دریافت ۵۰ خبر اخیر برای مقایسه عمیق متنی"""
+    """دریافت ۵۰ خبر اخیر جهت مقایسه عمیق متنی"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     try:
@@ -168,7 +168,7 @@ def call_groq_ai(prompt_text):
         return None
 
 def is_duplicate_story_ai(new_title, new_raw_summary, history_list):
-    """سنجش هوشمند شباهت رویداد تکنولوژی/عمومی بدون سوزاندن اخبار جدید یک برند"""
+    """سنجش هوشمند شباهت رویداد بدون سوزاندن اخبار جدید یک برند یا موضوع عمومی"""
     if not history_list:
         return False
 
@@ -180,9 +180,9 @@ def is_duplicate_story_ai(new_title, new_raw_summary, history_list):
         "\n".join([f"- {item}" for item in history_list]) + 
         "\n\nYOUR INSTRUCTION:\n"
         "Compare the 'NEW ARTICLE' with the 'PREVIOUSLY SENT ARTICLES HISTORY'.\n"
-        "Determining Factor: Is the new article reporting the EXACT SAME event, specific product launch, scientific discovery, or identical news story as one in the history?\n\n"
+        "Determining Factor: Is the new article reporting the EXACT SAME event, specific celebrity drama, product launch, scientific discovery, or identical news story as one in the history?\n\n"
         "CRITICAL RULE:\n"
-        "- Two articles can be about the SAME company/topic (e.g., Apple, Google, AI, Space), but if they discuss DIFFERENT events, product launches, or news, they are NOT duplicates -> Answer NO.\n"
+        "- Two articles can be about the SAME subject/celebrity/company (e.g., Apple, Elon Musk, Real Madrid), but if they discuss DIFFERENT events, announcements, or news stories, they are NOT duplicates -> Answer NO.\n"
         "- ONLY answer YES if both articles cover the SAME specific event or news story (even if written with different wording or clickbait titles).\n\n"
         "Answer ONLY with 'YES' or 'NO'."
     )
@@ -193,7 +193,7 @@ def is_duplicate_story_ai(new_title, new_raw_summary, history_list):
     return False
 
 def analyze_and_summarize_tech_news_with_ai(title, summary_text):
-    """تحلیل ماهیت خبر و فیلتر اخبار سیاسی، نظامی، مذهبی و چت‌های روزمره"""
+    """تحلیل ماهیت خبر و اجازه انتشار اخبار تکنولوژی، علمی، ورزشی، سلبریتی‌ها و زرد جالب"""
     content = clean_html(f"Title: {title}\nSummary: {summary_text}")
     if not content:
         return None
@@ -201,14 +201,13 @@ def analyze_and_summarize_tech_news_with_ai(title, summary_text):
     prompt = (
         f"این متن یک پست از یک کانال خبری یا سایت است:\n\n{content}\n\n"
         "وظایف شما:\n"
-        "۱. آیا این پست یک «خبر واقعی در حوزه تکنولوژی، هوش مصنوعی، علوم، سخت‌افزار، گجت‌ها یا اخبار عام‌المنفعه و کاربردی» است؟\n"
-        "پاسخ باید قطعاً NO باشد اگر پست شامل هریک از موارد زیر باشد:\n"
+        "۱. آیا این پست یک «خبر واقعی یا مطلب جذاب در حوزه تکنولوژی، هوش مصنوعی، علوم، ورزشی، اخبار سلبریتی‌ها، سرگرمی، حوادث یا اخبار عمومی» است؟\n"
+        "پاسخ باید قطعاً NO باشد تنها و فقط اگر پست شامل موارد زیر باشد:\n"
         "  - اخبار سیاسی، نظامی، جنگی، بین‌الملل، یا امور مربوط به دولت‌ها و سیاستمداران.\n"
         "  - مطالب مذهبی، مناسبت‌های تقویمی، ادعیه، احادیث یا تبریک/تسلیت.\n"
         "  - پست‌های روزمره و چت (مثل: صبح بخیر، شب خوش، تقویم امروز، نرخ ارز/طلا، متن ادبی).\n"
-        "  - اخبار ویدیوگیم، کنسول‌ها، فیلم/سریال یا سلبریتی‌ها.\n"
-        "  - تبلیغات، راهنمای خرید یا مقالات نظر شخصی.\n"
-        "۲. اگر پست یک خبر واقعیِ مفید و غیرسیاسی/غیرنظامی است، یک خلاصه کوتاه ۱ یا ۲ جمله‌ای به زبان فارسی روان، جذاب و دقیق بنویسید.\n\n"
+        "  - تبلیغات مستقیم، راهنمای خرید یا مقالات نظر شخصی بدون خبر جدید.\n"
+        "۲. اگر پست یک خبر/مطلب جذاب غیرسیاسی و غیرنظامی است، یک خلاصه کوتاه ۱ یا ۲ جمله‌ای به زبان فارسی روان، جذاب و دقیق بنویسید.\n\n"
         "فرمت پاسخ حتماً و دقیقاً به این شکل باشد:\n"
         "IS_NEWS: [YES یا NO]\n"
         "SUMMARY: [خلاصه فارسی خبر]"
@@ -263,7 +262,7 @@ def main():
             print(f"❌ خبر تکراری شناسایی و رد شد: {entry.title}")
             continue
 
-        # ب) سنجش ماهیت خبر و خلاصه‌سازی فارسی (رد مطالب سیاسی/نظامی/احوالپرسی)
+        # ب) سنجش ماهیت خبر و خلاصه‌سازی فارسی (رد مطالب سیاسی/نظامی/مذهبی/چت)
         fa_summary = analyze_and_summarize_tech_news_with_ai(entry.title, raw_summary)
         
         if fa_summary is None:
