@@ -10,7 +10,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MY_CHAT_ID = os.environ.get("MY_CHAT_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-# لیست کامل منابع RSS اخبار تکنولوژی، عمومی، ورزشی و سرگرمی (۳۹ منبع)
+# لیست کامل منابع RSS اخبار تکنولوژی، عمومی، ورزشی، سرگرمی و نظامی (۳۹ منبع)
 RSS_FEEDS = [
     # --- فید کانال‌های تلگرامی ---
     'https://rsshub.app/telegram/channel/Khabare_vije',
@@ -168,7 +168,7 @@ def call_groq_ai(prompt_text):
         return None
 
 def is_duplicate_story_ai(new_title, new_raw_summary, history_list):
-    """سنجش هوشمند شباهت رویداد بدون سوزاندن اخبار جدید یک برند یا موضوع عمومی"""
+    """سنجش هوشمند شباهت رویداد بدون سوزاندن اخبار جدید"""
     if not history_list:
         return False
 
@@ -180,9 +180,9 @@ def is_duplicate_story_ai(new_title, new_raw_summary, history_list):
         "\n".join([f"- {item}" for item in history_list]) + 
         "\n\nYOUR INSTRUCTION:\n"
         "Compare the 'NEW ARTICLE' with the 'PREVIOUSLY SENT ARTICLES HISTORY'.\n"
-        "Determining Factor: Is the new article reporting the EXACT SAME event, specific celebrity drama, product launch, scientific discovery, or identical news story as one in the history?\n\n"
+        "Determining Factor: Is the new article reporting the EXACT SAME event, military strike, product launch, scientific discovery, or identical news story as one in the history?\n\n"
         "CRITICAL RULE:\n"
-        "- Two articles can be about the SAME subject/celebrity/company (e.g., Apple, Elon Musk, Real Madrid), but if they discuss DIFFERENT events, announcements, or news stories, they are NOT duplicates -> Answer NO.\n"
+        "- Two articles can be about the SAME subject/country/company, but if they discuss DIFFERENT events, announcements, or news stories, they are NOT duplicates -> Answer NO.\n"
         "- ONLY answer YES if both articles cover the SAME specific event or news story (even if written with different wording or clickbait titles).\n\n"
         "Answer ONLY with 'YES' or 'NO'."
     )
@@ -192,22 +192,37 @@ def is_duplicate_story_ai(new_title, new_raw_summary, history_list):
         return True
     return False
 
-def analyze_and_summarize_tech_news_with_ai(title, summary_text):
-    """تحلیل ماهیت خبر و اجازه انتشار اخبار تکنولوژی، علمی، ورزشی، سلبریتی‌ها و زرد جالب"""
+def analyze_and_summarize_news_with_ai(title, summary_text, is_from_telegram=False):
+    """تحلیل هوشمند بر اساس منبع خبر (مجاز بودن اخبار نظامی برای سایت‌ها و فیلتر آن برای تلگرام)"""
     content = clean_html(f"Title: {title}\nSummary: {summary_text}")
     if not content:
         return None
 
+    if is_from_telegram:
+        # فیلترهای سخت‌گیرانه مخصوص کانال‌های تلگرام
+        filter_instruction = (
+            "پاسخ باید قطعاً NO باشد اگر پست شامل موارد زیر باشد:\n"
+            "  - اخبار سیاسی، نظامی، جنگی، بین‌الملل، یا امور مربوط به دولت‌ها و سیاستمداران.\n"
+            "  - مطالب مذهبی، مناسبت‌های تقویمی، ادعیه، احادیث یا تبریک/تسلیت.\n"
+            "  - پست‌های روزمره و چت (مثل: صبح بخیر، شب خوش، تقویم امروز، نرخ ارز/طلا، متن ادبی).\n"
+            "  - تبلیغات مستقیم، راهنمای خرید یا مقالات نظر شخصی."
+        )
+    else:
+        # فیلترهای سایت‌ها (اخبار نظامی، علمی، ورزشی و تکنولوژی مجاز هستند)
+        filter_instruction = (
+            "پاسخ باید قطعاً NO باشد تنها و فقط اگر پست شامل موارد زیر باشد:\n"
+            "  - اخبار جنجالی یا بیانیه‌های صریح احزاب سیاسی داخلی/حزبی.\n"
+            "  - مطالب مذهبی، مناسبت‌های تقویمی، ادعیه، احادیث یا تبریک/تسلیت.\n"
+            "  - چت روزمره، تبلیغات مستقیم، یا مقالات بدون خبر جدید.\n"
+            "نکته: اخبار نظامی، فناوری‌های دفاعی، حوادث و تحولات بین‌المللی برای سایت‌ها ۱۰۰٪ مجاز (YES) هستند."
+        )
+
     prompt = (
-        f"این متن یک پست از یک کانال خبری یا سایت است:\n\n{content}\n\n"
+        f"این متن یک پست از یک منبع خبری است:\n\n{content}\n\n"
         "وظایف شما:\n"
-        "۱. آیا این پست یک «خبر واقعی یا مطلب جذاب در حوزه تکنولوژی، هوش مصنوعی، علوم، ورزشی، اخبار سلبریتی‌ها، سرگرمی، حوادث یا اخبار عمومی» است؟\n"
-        "پاسخ باید قطعاً NO باشد تنها و فقط اگر پست شامل موارد زیر باشد:\n"
-        "  - اخبار سیاسی، نظامی، جنگی، بین‌الملل، یا امور مربوط به دولت‌ها و سیاستمداران.\n"
-        "  - مطالب مذهبی، مناسبت‌های تقویمی، ادعیه، احادیث یا تبریک/تسلیت.\n"
-        "  - پست‌های روزمره و چت (مثل: صبح بخیر، شب خوش، تقویم امروز، نرخ ارز/طلا، متن ادبی).\n"
-        "  - تبلیغات مستقیم، راهنمای خرید یا مقالات نظر شخصی بدون خبر جدید.\n"
-        "۲. اگر پست یک خبر/مطلب جذاب غیرسیاسی و غیرنظامی است، یک خلاصه کوتاه ۱ یا ۲ جمله‌ای به زبان فارسی روان، جذاب و دقیق بنویسید.\n\n"
+        "۱. آیا این پست یک «خبر واقعی یا مطلب مفید (در حوزه تکنولوژی، علوم، نظامی/دفاعی، ورزشی، سلبریتی‌ها، سرگرمی یا عمومی)» است؟\n"
+        f"{filter_instruction}\n"
+        "۲. اگر پست یک خبر/مطلب مفید است، یک خلاصه کوتاه ۱ یا ۲ جمله‌ای به زبان فارسی روان، جذاب و دقیق بنویسید.\n\n"
         "فرمت پاسخ حتماً و دقیقاً به این شکل باشد:\n"
         "IS_NEWS: [YES یا NO]\n"
         "SUMMARY: [خلاصه فارسی خبر]"
@@ -234,8 +249,9 @@ def main():
 
     # ۱. جمع‌آوری اخبار امروز از تمام ۳۹ منبع و کانال
     for feed_url in RSS_FEEDS:
+        is_telegram = ('telegram' in feed_url or 'rsshub' in feed_url)
         try:
-            if 'telegram' in feed_url or 'rsshub' in feed_url:
+            if is_telegram:
                 response = requests.get(feed_url, headers=headers, timeout=15)
                 feed = feedparser.parse(response.content)
             else:
@@ -245,6 +261,8 @@ def main():
                 link = entry.link
 
                 if not is_link_sent(link) and is_published_today(entry):
+                    # اضافه کردن مشخصه منبع تلگرامی به آیتم
+                    entry['is_telegram'] = is_telegram
                     raw_articles.append(entry)
         except Exception as e:
             print(f"خطا در دریافت RSS از {feed_url}: {e}")
@@ -255,19 +273,20 @@ def main():
 
     for entry in raw_articles:
         raw_summary = clean_html(getattr(entry, 'summary', '') or getattr(entry, 'description', ''))
-        
+        is_telegram = getattr(entry, 'is_telegram', False)
+
         # الف) ابتدا بررسی تکراری بودن خبر (با سنجش رویداد واحد پیش از ترجمه)
         if is_duplicate_story_ai(entry.title, raw_summary, recent_stories_history):
             save_link_title_and_summary(entry.link, entry.title, raw_summary)
             print(f"❌ خبر تکراری شناسایی و رد شد: {entry.title}")
             continue
 
-        # ب) سنجش ماهیت خبر و خلاصه‌سازی فارسی (رد مطالب سیاسی/نظامی/مذهبی/چت)
-        fa_summary = analyze_and_summarize_tech_news_with_ai(entry.title, raw_summary)
+        # ب) سنجش ماهیت خبر و خلاصه‌سازی فارسی بر اساس منبع (تلگرام یا سایت)
+        fa_summary = analyze_and_summarize_news_with_ai(entry.title, raw_summary, is_from_telegram=is_telegram)
         
         if fa_summary is None:
             save_link_title_and_summary(entry.link, entry.title, raw_summary)
-            print(f"خبر غیرمرتبط/سیاسی/نظامی/چت رد شد: {entry.title}")
+            print(f"خبر غیرمرتبط/فیلترشده رد شد: {entry.title}")
             continue
 
         processed_news.append({
