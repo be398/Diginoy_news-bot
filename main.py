@@ -37,13 +37,13 @@ def init_db():
         )
     ''')
     
-    # چک کردن ستون hash برای ارتقای دیتابیس‌های قدیمی
+    # ارتقای دیتابیس قدیمی در صورت نیاز
     cursor.execute("PRAGMA table_info(sent_news)")
     columns = [column[1] for column in cursor.fetchall()]
     if 'hash' not in columns:
         try:
             cursor.execute("ALTER TABLE sent_news ADD COLUMN hash TEXT")
-            logging.info("🛠️ ستون hash به دیتابیس قدیمی اضافه شد.")
+            logging.info("🛠️ ستون hash به دیتابیس اضافه شد.")
         except Exception as e:
             logging.error(f"خطا در افزودن ستون hash: {e}")
             
@@ -96,7 +96,7 @@ def generate_hash(title, content):
 def clean_html(text):
     return re.sub(r'<[^>]+>', '', text).strip()
 
-# --- دریافت ناهمگام با هدرهای استاندارد مرورگر ---
+# --- دریافت ناهمگام RSS ---
 async def fetch_feed(session, category, url):
     articles = []
     headers = {
@@ -206,7 +206,7 @@ async def send_telegram(session, text):
 
 # --- تابع اصلی ---
 async def main():
-    logging.info("🚀 شروع اجرای اسکریپت اخبار...")
+    logging.info("🚀 شروع اجرای اسکریپت اخبار تکنولوژی...")
     
     if not BOT_TOKEN or not MY_CHAT_ID:
         logging.critical("❌ متغیرهای BOT_TOKEN یا MY_CHAT_ID تنظیم نشده‌اند!")
@@ -233,12 +233,13 @@ async def main():
 
         logging.info(f"📰 تعداد کل اخبار جدید یافت‌شده: {len(all_new_articles)}")
 
+        # 👇 اگر هیچ خبر جدیدی از سایت‌ها استخراج نشد
         if not all_new_articles:
             logging.info("خبر جدیدی یافت نشد.")
             await send_telegram(session, "❌ **در این دور خبر جدیدی یافت نشد.**")
             return
 
-        # ۲. خلاصه با Groq
+        # ۲. خلاصه‌سازی با Groq
         processed_by_category = {}
 
         for article in all_new_articles[:10]:
@@ -264,7 +265,13 @@ async def main():
 
                 save_news_to_db(article['hash'], article['link'], article['title'], summary, cat)
 
-        # ۳. ارسال پیام‌ها
+        # 👇 اگر اخبار دریافت شدند اما تمام آن‌ها تکراری/فیلتر شدند و خروجی نهایی خالی شد
+        if not processed_by_category:
+            logging.info("اخبار دریافت شدند اما هیچ پیام جدیدی پردازش نشد.")
+            await send_telegram(session, "❌ **در این دور خبر جدیدی یافت نشد.**")
+            return
+
+        # ۳. ارسال پیام‌های خلاصه‌شده به تلگرام
         for category, messages in processed_by_category.items():
             header = f"📁 **اخبار جدید بخش: {category}**\n\n"
             full_msg = header + "\n".join(messages)
