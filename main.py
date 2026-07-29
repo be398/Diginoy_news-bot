@@ -130,14 +130,17 @@ def send_telegram_message(text):
 def clean_html(text):
     return re.sub(r'<[^>]+>', '', text).strip()
 
-def is_published_today(entry):
+def is_published_recently(entry):
+    """بررسی انتشار در ۴۸ ساعت گذشته برای پوشش اختلاف زمان سرورها"""
     published_parsed = getattr(entry, 'published_parsed', None) or getattr(entry, 'updated_parsed', None)
     if not published_parsed:
         return True
 
     today_utc = datetime.now(timezone.utc).date()
     entry_date = datetime(*published_parsed[:6], tzinfo=timezone.utc).date()
-    return entry_date == today_utc
+    
+    # اجازه عبور به اخبار امروز و دیروز
+    return (today_utc - entry_date).days <= 1
 
 # --- بخش ارتباط با هوش مصنوعی Groq ---
 
@@ -215,7 +218,7 @@ def main():
     raw_articles = []
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
-    # ۱. جمع‌آوری تمامی اخبار امروز از ۳۹ منبع
+    # ۱. جمع‌آوری اخبار از ۳۹ منبع (بررسی ۳۰ آیتم اخیر از هر فید)
     for feed_url in RSS_FEEDS:
         is_telegram = ('telegram' in feed_url or 'rsshub' in feed_url)
         try:
@@ -225,10 +228,10 @@ def main():
             else:
                 feed = feedparser.parse(feed_url)
 
-            for entry in feed.entries[:20]:
+            for entry in feed.entries[:30]:
                 link = entry.link
 
-                if not is_link_sent(link) and is_published_today(entry):
+                if not is_link_sent(link) and is_published_recently(entry):
                     raw_articles.append(entry)
         except Exception as e:
             print(f"خطا در دریافت RSS از {feed_url}: {e}")
@@ -246,7 +249,7 @@ def main():
             print(f"❌ خبر تکراری رد شد: {entry.title}")
             continue
 
-        # ب) خلاصه‌سازی خبر (بدون هیچ فیلتر)
+        # ب) خلاصه‌سازی خبر به فارسی
         fa_summary = summarize_news_with_ai(entry.title, raw_summary)
 
         processed_news.append({
