@@ -1,5 +1,5 @@
+aiosqlite
 aiohttp
 feedparser
-rapidfuzz
 pyyaml
-requests
+rapidfuzz
