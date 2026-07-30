@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-running: ubuntu-latest
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -17,7 +17,6 @@ jobs:
         with:
           python-version: '3.10'
 
-      # 👈 این بخش اضافه می‌شود
       - name: Install dependencies
         run: |
           pip install aiosqlite aiohttp feedparser pyyaml rapidfuzz
