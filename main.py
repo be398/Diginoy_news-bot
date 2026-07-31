@@ -6,7 +6,7 @@ import hashlib
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Set
+from typing import List, Dict, Any
 
 import yaml
 import aiohttp
@@ -14,7 +14,6 @@ import aiosqlite
 import feedparser
 from rapidfuzz import fuzz
 
-# تنظیمات Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -22,10 +21,9 @@ MY_CHAT_ID = os.environ.get("MY_CHAT_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 DB_FILE = "seen_news.db"
-COMMON_STOPWORDS = {'android', 'google', 'samsung', 'apple', 'update', 'new', 'report', 'review', 'vs', 'best', 'how', 'to'}
+COMMON_STOPWORDS = {'update', 'report', 'review', 'vs', 'how', 'to'}
 
-# کنترل هم‌زمانی برای جلوگیری از ارور ۵۰۳ پروکسی
-CONCURRENCY_SEMAPHORE = asyncio.Semaphore(3)
+CONCURRENCY_SEMAPHORE = asyncio.Semaphore(5)
 
 def clean_html(text: str) -> str:
     if not text:
@@ -43,7 +41,6 @@ def generate_hash(title: str, link: str) -> str:
     raw = f"{title.strip().lower()}_{link.strip()}"
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()
 
-# --- مدیریت دیتابیس ناهمگام (aiosqlite) ---
 async def init_db():
     async with aiosqlite.connect(DB_FILE) as conn:
         await conn.execute('''
@@ -57,24 +54,15 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        async with conn.execute("PRAGMA table_info(sent_news)") as cursor:
-            columns = [column[1] for column in await cursor.fetchall()]
-            if 'hash' not in columns:
-                try:
-                    await conn.execute("ALTER TABLE sent_news ADD COLUMN hash TEXT")
-                except Exception:
-                    pass
         await conn.commit()
 
-async def is_hash_or_similar_seen(news_hash: str, title: str, limit: int = 60) -> bool:
+async def is_hash_or_similar_seen(news_hash: str, title: str, limit: int = 40) -> bool:
     try:
         async with aiosqlite.connect(DB_FILE) as conn:
-            # ۱. چک با Hash دقیق
             async with conn.execute('SELECT 1 FROM sent_news WHERE hash = ?', (news_hash,)) as cursor:
                 if await cursor.fetchone():
                     return True
 
-            # ۲. چک شباهت با تیتر نرمال‌شده
             async with conn.execute('SELECT title FROM sent_news WHERE title IS NOT NULL ORDER BY id DESC LIMIT ?', (limit,)) as cursor:
                 recent_rows = await cursor.fetchall()
                 recent_titles = [row[0] for row in recent_rows if row[0]]
@@ -86,14 +74,13 @@ async def is_hash_or_similar_seen(news_hash: str, title: str, limit: int = 60) -
             loop = asyncio.get_running_loop()
             for old_title in recent_titles:
                 clean_old_title = normalize_title_for_fuzzy(old_title)
-                # اجرای مقایسه رشته‌ای سنگین در Thread
                 similarity = await loop.run_in_executor(None, fuzz.token_sort_ratio, clean_new_title, clean_old_title)
-                if similarity > 90:
-                    logging.info(f"⚡ خبر تکراری رد شد: {title}")
+                # کاهش حساسیت به ۹۵٪ جهت جلوگیری از حذف اخبار مهم
+                if similarity > 95:
+                    logging.info(f"⚡ خبر تکراری شناسایی شد: {title}")
                     return True
     except Exception as e:
-        logging.error(f"خطا در چک دیتابیس: {e}")
-
+        logging.error(f"خطا در دیتابیس: {e}")
     return False
 
 async def save_news_to_db(news_hash: str, link: str, title: str, summary: str, category: str):
@@ -107,7 +94,6 @@ async def save_news_to_db(news_hash: str, link: str, title: str, summary: str, c
     except Exception as e:
         logging.error(f"خطا در ثبت دیتابیس: {e}")
 
-# --- پارس کردن فید در Thread Pool ---
 def parse_feed_bytes(content: bytes) -> List[Dict[str, str]]:
     feed = feedparser.parse(content)
     extracted = []
@@ -119,16 +105,16 @@ def parse_feed_bytes(content: bytes) -> List[Dict[str, str]]:
             extracted.append({'title': title, 'link': link, 'summary': summary})
     return extracted
 
-# --- دریافت ناهمگام RSS ---
 async def fetch_feed(session: aiohttp.ClientSession, category: str, url: str) -> List[Dict[str, Any]]:
     articles = []
+    # هدر کامل‌تر برای دور زدن فیلتر سایت‌ها
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'Accept': 'application/rss+xml, application/xml, text/xml, text/html;q=0.9',
     }
     async with CONCURRENCY_SEMAPHORE:
         try:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=12)) as response:
                 if response.status == 200:
                     content = await response.read()
                     loop = asyncio.get_running_loop()
@@ -145,12 +131,11 @@ async def fetch_feed(session: aiohttp.ClientSession, category: str, url: str) ->
                                 'category': category
                             })
                 else:
-                    logging.warning(f"کد وضعیت {response.status} از source: {url}")
+                    logging.warning(f"عدم دریافت پاسخ (کد {response.status}) از: {url}")
         except Exception as e:
             logging.warning(f"خطا در دریافت RSS از {url}: {e}")
     return articles
 
-# --- فراخوانی Groq API ---
 async def process_with_groq(session: aiohttp.ClientSession, article: Dict[str, Any]) -> Dict[str, str]:
     if not GROQ_API_KEY:
         return None
@@ -194,7 +179,6 @@ async def process_with_groq(session: aiohttp.ClientSession, article: Dict[str, A
 
     return None
 
-# --- ارسال به تلگرام ---
 async def send_telegram(session: aiohttp.ClientSession, text: str) -> bool:
     if not BOT_TOKEN or not MY_CHAT_ID:
         return False
@@ -213,9 +197,8 @@ async def send_telegram(session: aiohttp.ClientSession, text: str) -> bool:
         logging.error(f"خطا در ارسال تلگرام: {e}")
         return False
 
-# --- تابع اصلی ---
 async def main():
-    logging.info("🚀 شروع اجرای اسکریپت جامع اخبار...")
+    logging.info("🚀 شروع اجرای اسکریپت با تمرکز ۵ لینکی...")
     await init_db()
 
     if not os.path.exists("feeds.yaml"):
@@ -228,18 +211,18 @@ async def main():
     async with aiohttp.ClientSession() as session:
         all_new_articles = []
         
-        # پردازش دسته‌ای ۳تایی لینک‌ها برای جلوگیر از فشار شبکه
+        # تقسیم دقیق لینک‌ها به دسته‌های ۵‌تایی متمرکز
         for category, urls in feed_categories.items():
-            batch_size = 3
+            batch_size = 5
             for i in range(0, len(urls), batch_size):
                 batch_urls = urls[i:i + batch_size]
                 tasks = [fetch_feed(session, category, url) for url in batch_urls]
                 results = await asyncio.gather(*tasks)
                 for sublist in results:
                     all_new_articles.extend(sublist)
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(1.0)  # تنفس ۱ ثانیه‌ای بین دسته‌ها
 
-        logging.info(f"📰 تعداد اخبار جدید استخراج‌شده از منابع مختلف: {len(all_new_articles)}")
+        logging.info(f"📰 تعداد اخبار جدید استخراج‌شده: {len(all_new_articles)}")
 
         if not all_new_articles:
             logging.info("خبر جدیدی یافت نشد.")
@@ -248,7 +231,8 @@ async def main():
 
         processed_by_category = {}
 
-        for article in all_new_articles[:15]:
+        # پردازش تمام اخبار یافت‌شده (حذف برش ۱۵ تایی)
+        for article in all_new_articles:
             ai_res = await process_with_groq(session, article)
 
             if ai_res:
@@ -271,6 +255,7 @@ async def main():
                 processed_by_category[cat].append(msg_chunk)
 
                 await save_news_to_db(article['hash'], article['link'], article['title'], summary, cat)
+                await asyncio.sleep(0.5)
 
         if not processed_by_category:
             await send_telegram(session, "❌ <b>در این دور خبر جدیدی یافت نشد.</b>")
@@ -284,12 +269,12 @@ async def main():
                 chunks = [full_msg[i:i+4000] for i in range(0, len(full_msg), 4000)]
                 for chunk in chunks:
                     await send_telegram(session, chunk)
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(0.5)
             else:
                 await send_telegram(session, full_msg)
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.5)
 
-        logging.info("✅ اخبار با موفقیت ارسال شدند.")
+        logging.info("✅ تمام اخبار با موفقیت ارسال شدند.")
 
 if __name__ == "__main__":
     asyncio.run(main())
